@@ -218,66 +218,6 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
                 f" {(t1 - iter_t0) * 1000:.2f}ms, est. time remaining: {est_time / 60. / 60.:.2f}h"
             )
 
-        
-        
-        
-    # for state["iter_num"] in range(state["iter_num"], max_iters):
-    #     # determine and set the learning rate for this iteration
-    #     lr = get_lr(state["iter_num"], warmup_iters, max_iters) if decay_lr else learning_rate
-    #     for param_group in optimizer.param_groups:
-    #         param_group["lr"] = lr
-
-    #     iter_num = state["iter_num"] + 1
-    #     iter_t0 = time.perf_counter()
-
-    #     input_ids, targets = next(train_iter)
-    #     is_accumulating = iter_num % gradient_accumulation_steps != 0
-    #     with fabric.no_backward_sync(model, enabled=is_accumulating):
-    #         logits = model(input_ids)
-    #         loss = chunked_cross_entropy(logits, targets, chunk_size=0)
-    #         fabric.backward(loss / gradient_accumulation_steps)
-
-    #     if not is_accumulating:
-    #         fabric.clip_gradients(model, optimizer, max_norm=grad_clip)
-    #         optimizer.step()
-    #         optimizer.zero_grad()
-    #         state["step_count"] += 1
-
-    #     # if iter_num % log_interval == 0:
-    #     if not is_accumulating and state["step_count"] % log_interval == 0:
-    #         loss_item = loss.item()  # expensive device-to-host synchronization
-    #         t1 = time.perf_counter()
-    #         throughput.update(
-    #             time=t1 - total_t0,
-    #             batches=iter_num,
-    #             samples=iter_num * micro_batch_size,
-    #             lengths=iter_num * micro_batch_size * model.max_seq_length,
-    #             flops=measured_flops * log_interval,
-    #         )
-    #         throughput.compute_and_log(step=iter_num)
-    #         fabric.log_dict(metrics = {"running/loss": loss_item, "running/lr": lr, 
-    #                                    "step": state['step_count'],
-    #                                    "running/itertime": (t1 - iter_t0) * 1000})
-    #         fabric.print(
-    #             f"iter {iter_num} step {state['step_count']}: loss {loss_item:.4f}, iter time:"
-    #             f" {(t1 - iter_t0) * 1000:.2f}ms{' (optimizer.step)' if not is_accumulating else ''}"
-    #         )
-
-    #     if not is_accumulating and state["step_count"] % eval_interval == 0:
-    #         t0 = time.perf_counter()
-    #         val_loss = validate(fabric, model, val_dataloader, max_iters=eval_iters)
-    #         t1 = time.perf_counter() - t0
-    #         fabric.log_dict(metrics = {"val/loss": val_loss.item(), "val/time": t1 * 1000,
-    #                                     "step": state['step_count'],
-    #                                     "running/valtime": t1 * 1000})
-    #         fabric.print(f"step {iter_num}: val loss {val_loss.item():.4f}, val time: {t1 * 1000:.2f}ms")
-    #         fabric.barrier()
-    #     if not is_accumulating and state["step_count"] % save_interval == 0:
-    #         checkpoint_path = out_dir / f"iter-{iter_num:06d}-ckpt.pth"
-    #         fabric.print(f"Saving checkpoint to {str(checkpoint_path)!r}")
-    #         fabric.save(checkpoint_path, state)
-
-
 # FSDP has issues with `inference_mode`
 @torch.no_grad()
 def validate(fabric: L.Fabric, model: torch.nn.Module, val_dataloader: DataLoader, max_iters: int) -> torch.Tensor:

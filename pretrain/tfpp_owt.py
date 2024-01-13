@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from lightning.fabric.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
-from lightning.fabric.strategies import FSDPStrategy,DDPStrategy
+from lightning.fabric.strategies import DDPStrategy
 from lightning.fabric.utilities import ThroughputMonitor, measure_flops
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -19,13 +19,13 @@ from torch.utils.data import DataLoader, IterableDataset
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from lit_gpt.mamba_ssm.models.config_mamba import MambaConfig as Config
-from lit_gpt.mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel as GPT
+from lit_gpt import Config
+from lit_gpt.model_exp import GPT, Block
 from lit_gpt.utils import chunked_cross_entropy, estimate_flops, get_default_supported_precision, num_parameters
 
-model_name = "mamba_owt_130M_32k"
-name = "mamba_owt_130M_32k"
-config_file = "configs/mamba_130M_32k.json"
+model_name = "tfpp-owt-130M-32k"
+name = "tfpp-owt-130M-32k"
+config_file = "configs/tfpp_130M_32k.json"
 out_dir = Path(f"/scratch/oymak_root/oymak0/milii/owt_mistral/{name}")
 # data_dir = Path("/nfs/turbo/coe-sodalab/shared_data/owt_mistral")
 # data_dir = Path("/scratch/oymak_root/oymak0/milii/datasets/openwebtext")
@@ -38,7 +38,7 @@ log_interval = 10
 # Hyperparameters
 learning_rate = 6e-4
 batch_size = 480
-micro_batch_size = 20
+micro_batch_size = 12
 gradient_accumulation_steps = 0
 max_iters = 600000   # num_epochs * (epoch_size // micro_batch_size) // devices
 weight_decay = 1e-1
@@ -51,7 +51,7 @@ lr_decay_iters = max_iters
 min_lr = 6e-5
 
 hparams = {k: v for k, v in locals().items() if isinstance(v, (int, float, str)) and not k.startswith("_")}
-#logger = CSVLogger("out", name, flush_logs_every_n_steps=log_interval)
+# logger = CSVLogger("out", name, flush_logs_every_n_steps=log_interval)
 logger = WandbLogger(name, save_dir="out", project="gateRes" )
 
 
@@ -62,7 +62,7 @@ def setup(devices: int = 1, precision: Optional[str] = None, resume: Union[bool,
         parallel_devices = [torch.device(f"cuda:{i}") for i in range(devices)]
         strategy = DDPStrategy( parallel_devices=parallel_devices, precision=precision)
     else:
-        strategy = "ddp"
+        strategy = "auto"
 
     fabric = L.Fabric(devices=devices, strategy=strategy, precision=precision, loggers=logger)
     
@@ -74,11 +74,11 @@ def setup(devices: int = 1, precision: Optional[str] = None, resume: Union[bool,
         assert gradient_accumulation_steps > 0
         hparams["gradient_accumulation_steps"] = gradient_accumulation_steps
     hparams["devices"] = devices
-    fabric.print(hparams, flush=True)
-    fabric.launch(main, resume=resume, hparams=hparams)
+    fabric.print(hparams)
+    fabric.launch(main, resume=resume)
 
 
-def main(fabric: L.Fabric, resume: Union[bool, Path], hparams: dict) -> None:
+def main(fabric: L.Fabric, resume: Union[bool, Path]) -> None:
     if fabric.global_rank == 0:
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,7 +96,7 @@ def main(fabric: L.Fabric, resume: Union[bool, Path], hparams: dict) -> None:
 
     model = fabric.setup(model)
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2), foreach=False, fused=True
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2), foreach=False
     )
     optimizer = fabric.setup_optimizers(optimizer)
 
@@ -105,7 +105,7 @@ def main(fabric: L.Fabric, resume: Union[bool, Path], hparams: dict) -> None:
     val_dataloader = DataLoader(val_data, batch_size=micro_batch_size, num_workers=2)
     train_dataloader, val_dataloader = fabric.setup_dataloaders(train_dataloader, val_dataloader)
 
-    state = {"model": model, "optimizer": optimizer, "hparams": hparams, "iter_num": 0}
+    state = {"model": model, "optimizer": optimizer, "hparams": hparams, "iter_num": 0, "step_count": 0}
 
     if resume is True:
         resume = max(out_dir.glob("*.pth"), key=lambda p: int(p.name.split("-")[1]))
@@ -123,11 +123,10 @@ def main(fabric: L.Fabric, resume: Union[bool, Path], hparams: dict) -> None:
 def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_dataloader: DataLoader) -> None:
     model = state["model"]
     optimizer = state["optimizer"]
-    
 
     validate(fabric, model, val_dataloader, max_iters=2)  # sanity check
 
-    with torch.device("cuda"):
+    with torch.device("meta"):
         meta_model = GPT(model.config)
         # "estimated" is not as precise as "measured". Estimated is optimistic but widely used in the wild.
         # When comparing MFU or FLOP numbers with other projects that use estimated FLOPs,
@@ -145,6 +144,7 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
     total_t0 = time.perf_counter()
 
     train_iter = iter(train_dataloader)
+
     for state["iter_num"] in range(state["iter_num"], max_iters):
         iter_num = state["iter_num"]
         lr = get_lr(iter_num, warmup_iters, lr_decay_iters) if decay_lr else learning_rate
@@ -209,6 +209,7 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
                 f"iter {iter_num}: loss {loss_item:.4f}, iter time:"
                 f" {(t1 - iter_t0) * 1000:.2f}ms, est. time remaining: {est_time / 60. / 60.:.2f}h"
             )
+
 
 # FSDP has issues with `inference_mode`
 @torch.no_grad()
