@@ -141,6 +141,10 @@ class Config:
             from lit_gpt.rmsnorm import RMSNorm
 
             return RMSNorm
+        if self._norm_class == "GMRNorm":
+            from lit_gpt.gmrnorm import GMRNorm
+
+            return GMRNorm
         return getattr(torch.nn, self._norm_class)
 
 

@@ -27,7 +27,7 @@ class GPT(nn.Module):
             dict(
                 wte=nn.Embedding(config.padded_vocab_size, config.n_embd),
                 h=nn.ModuleList(Block(config) for _ in range(config.n_layer)),
-                ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
+                ln_f=NormLayer(config),
             )
         )
         self.max_seq_length = self.config.block_size
@@ -134,13 +134,23 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             block.attn.kv_cache = None
 
+class NormLayer(nn.Module):
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        if config.norm_class.__name__ == "GMRNorm":
+            self.norm = config.norm_class(config.n_embd, dim=-1, eps=config.norm_eps, block_size=config.block_size)
+            print  ("GMRNorm")
+        else:
+            self.norm = config.norm_class(config.n_embd, eps=config.norm_eps)
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm(x)
 class Block(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
-        self.norm_1 = config.norm_class(config.n_embd, eps=config.norm_eps)
+        self.norm_1 = NormLayer(config)
         self.attn = CausalSelfAttention(config)
-        self.norm_2 = None if config.shared_attention_norm else config.norm_class(config.n_embd, eps=config.norm_eps)
+        self.norm_2 = None if config.shared_attention_norm else NormLayer(config)
         self.mlp = config.mlp_class(config)
 
         self.config = config
