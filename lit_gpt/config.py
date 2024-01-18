@@ -1221,6 +1221,24 @@ for c in mistral:
         copy["name"] = c["name"].format(kind)
         copy["hf_config"]["name"] = c["hf_config"]["name"].format(kind)
         configs.append(copy)
+configs.append(
+    # https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2/blob/main/config.json
+    dict(
+        name="Mistral-7B-Instruct-v0.2",
+        hf_config=dict(org="mistralai", name="Mistral-7B-Instruct-v0.2"),
+        padded_vocab_size=32000,
+        block_size=32768,
+        n_layer=32,
+        n_query_groups=8,
+        rotary_percentage=1.0,
+        parallel_residual=False,
+        bias=False,
+        _norm_class="RMSNorm",
+        norm_eps=1e-05,
+        _mlp_class="LLaMAMLP",
+        intermediate_size=14336,
+    )
+)
 
 
 ############
@@ -1247,7 +1265,7 @@ tiny_llama = [
     )
 ]
 for c in tiny_llama:
-    for kind, hf_postfix in (("", "-intermediate-step-955k-token-2T"), ("chat", "-Chat-v0.6")):
+    for kind, hf_postfix in (("", "-intermediate-step-1431k-3T"), ("-chat", "-Chat-v1.0")):
         copy = deepcopy(c)
         copy["name"] = c["name"].format(kind)
         copy["hf_config"]["name"] = c["hf_config"]["name"].format(hf_postfix)
