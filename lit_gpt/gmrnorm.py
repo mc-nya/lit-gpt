@@ -27,17 +27,25 @@ class GMRNorm(torch.nn.Module):
         [0,    0,   0,   0,  1/5]]
     """
 
-    def __init__(self, size: int, dim: int = -1, eps: float = 1e-5, block_size: int = 4096) -> None:
+    def __init__(self,
+                 size: int,
+                 dim: int = -1,
+                 eps: float = 1e-5,
+                 block_size: int = 4096,
+                 elementwise: bool = True) -> None:
         super().__init__()
         self.weight = torch.nn.Parameter(torch.ones(size))
         self.eps = eps
         self.dim = dim
         self.size = size
         self.block_size = block_size
-        # self.register_parameter('causal_matrix', self._get_causal_matrix())
-        self.causal_matrix = torch.nn.Parameter(self._get_causal_matrix())
+        self.elementwise = elementwise
+        self.register_buffer('causal_matrix', self._get_causal_matrix())
+        # self.causal_matrix = torch.nn.Parameter(self._get_causal_matrix())
+        self.causal_mask = torch.triu(
+            torch.ones((self.block_size, self.block_size),
+                       dtype=torch.float32))
         print("Use GMRNorm: init causal mean matrix")
-        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
@@ -45,10 +53,20 @@ class GMRNorm(torch.nn.Module):
         # Get mean of all vectors
         # (B, T, C) -> (B, T)
         B, T, C = x.shape
-        mean = torch.mean(x, dim=self.dim)
-        # do causal mean, on each example, multiply by causal matrix
-        mean = torch.matmul(mean, self.causal_matrix[:T, :T])
-        x = x - mean.unsqueeze(-1)
+        if not self.elementwise:
+            mean = torch.mean(x, dim=self.dim)
+            # do causal mean, on each example, multiply by causal matrix
+            mean = torch.matmul(
+                mean, self.causal_matrix[:T, :T].masked_fill(
+                    self.causal_mask[:T, :T] == 0, 0)).unsqueeze(-1)
+        else:
+            # mean = torch.matmul(
+            #     x.transpose(-1, -2), self.causal_matrix[:T, :T].masked_fill(
+            #         self.causal_mask[:T, :T] == 0, 0)).transpose(-1, -2)
+            mean = torch.matmul(
+                x.transpose(-1, -2), self.causal_matrix[:T, :T]).transpose(-1, -2)
+        
+        x = x - mean
 
         # NOTE: the original RMSNorm paper implementation is not equivalent
         norm_x = torch.mean(x * x, dim=self.dim, keepdim=True)
@@ -63,8 +81,15 @@ class GMRNorm(torch.nn.Module):
         Returns:
             torch.Tensor: causal mask matrix
         """
-    
-        causal_matrix = torch.triu(torch.ones((self.block_size, self.block_size), dtype=torch.float32))
-        causal_matrix /= torch.arange(1, self.block_size + 1, dtype=torch.float32)
+
+        causal_matrix = torch.triu(
+            torch.ones((self.block_size, self.block_size),
+                       dtype=torch.float32))
+        causal_matrix /= torch.arange(1,
+                                      self.block_size + 1,
+                                      dtype=torch.float32)
+        if self.elementwise:
+            # causal_matrix /= 2
+            causal_matrix[0, 0] = 0
+
         return causal_matrix
-        

@@ -23,11 +23,11 @@ from lit_gpt import Config
 from lit_gpt.model_exp import GPT, Block
 from lit_gpt.utils import chunked_cross_entropy, estimate_flops, get_default_supported_precision, num_parameters
 
-model_name = "tfpp_gmrnorm_train"
-name = "tfpp_gmrnorm_train"
+model_name = "tfpp_elementwise"
+name = "tfpp_elementwise"
 config_file = "configs/tfpp_experiment.json"
 out_dir = Path(f"/scratch/oymak_root/oymak0/milii/owt_mistral/{name}")
-# data_dir = Path("/nfs/turbo/coe-sodalab/shared_data/owt_mistral")
+#data_dir = Path("/nfs/turbo/coe-sodalab/shared_data/owt_mistral")
 # data_dir = Path("/scratch/oymak_root/oymak0/milii/datasets/openwebtext")
 data_dir = Path("/tmpssd/milii/datasets/openwebtext")
 save_interval = 1000
@@ -46,7 +46,7 @@ beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0
 decay_lr = True
-warmup_iters = 2000 
+warmup_iters = 2000
 lr_decay_iters = max_iters
 min_lr = 6e-5
 
@@ -65,7 +65,7 @@ def setup(devices: int = 1, precision: Optional[str] = None, resume: Union[bool,
         strategy = "auto"
 
     fabric = L.Fabric(devices=devices, strategy=strategy, precision=precision, loggers=logger)
-    
+
     if hparams["gradient_accumulation_steps"] ==0:
         assert batch_size % micro_batch_size == 0
         gradient_accumulation_steps = batch_size // micro_batch_size
@@ -158,7 +158,7 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
             train_loss = validate(fabric, model, train_dataloader, max_iters=eval_iters)
             print("train_loss", train_loss)
             t1 = time.perf_counter() - t0
-            fabric.log_dict(metrics = {"eval/val_loss": val_loss.item(), 
+            fabric.log_dict(metrics = {"eval/val_loss": val_loss.item(),
                                        "eval/time": t1 * 1000,
                                        "eval/train_loss": train_loss.item(),
                                        "eval/lr": lr,
@@ -174,7 +174,7 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
         iter_t0 = time.perf_counter()
 
         gradient_accumulation_steps = hparams["gradient_accumulation_steps"]
-        
+
         for micro_step in range(gradient_accumulation_steps):
             is_accumulating = micro_step == gradient_accumulation_steps - 1
             with fabric.no_backward_sync(model, enabled=is_accumulating):
@@ -201,7 +201,7 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
             #throughput.compute_and_log(step=iter_num//log_interval)
             fabric.log_dict(metrics = {"running/iter": iter_num,
                                        "running/loss": loss_item,
-                                       "running/lr": lr, 
+                                       "running/lr": lr,
                                         "running/remaining_time": est_time / 60. / 60.,
                                        "running/itertime": (t1 - iter_t0) * 1000,
                                        "step": iter_num}, step=iter_num//log_interval)
