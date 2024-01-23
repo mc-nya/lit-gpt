@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from lightning.fabric.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
-from lightning.fabric.strategies import DDPStrategy
+from lightning.fabric.strategies import DDPStrategy, FSDPStrategy
 from lightning.fabric.utilities import ThroughputMonitor, measure_flops
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -26,7 +26,7 @@ from lit_gpt.utils import chunked_cross_entropy, estimate_flops, get_default_sup
 model_name = "tfpp-owt-130M-32k"
 name = "tfpp-owt-130M-32k"
 config_file = "configs/tfpp_130M_32k.json"
-out_dir = Path(f"/scratch/oymak_root/oymak0/milii/owt_mistral/{name}")
+out_dir = Path(f"/scratch/oymak_root/oymak0/milii/owt_mistral/{name}_debug")
 # data_dir = Path("/nfs/turbo/coe-sodalab/shared_data/owt_mistral")
 # data_dir = Path("/scratch/oymak_root/oymak0/milii/datasets/openwebtext")
 data_dir = Path("/tmpssd/milii/datasets/openwebtext")
@@ -34,6 +34,7 @@ save_interval = 1000
 eval_interval = 1000
 eval_iters = 200
 log_interval = 10
+FSDP = True
 
 # Hyperparameters
 learning_rate = 6e-4
@@ -59,8 +60,17 @@ def setup(devices: int = 1, precision: Optional[str] = None, resume: Union[bool,
     precision = precision or get_default_supported_precision(training=True)
 
     if devices > 1:
-        parallel_devices = [torch.device(f"cuda:{i}") for i in range(devices)]
-        strategy = DDPStrategy( parallel_devices=parallel_devices, precision=precision)
+        if FSDP:
+            strategy = FSDPStrategy(
+                    auto_wrap_policy={Block},
+                    activation_checkpointing_policy={Block},
+                    state_dict_type="full",
+                    limit_all_gathers=True,
+                    cpu_offload=False,
+                )
+        else:
+            parallel_devices = [torch.device(f"cuda:{i}") for i in range(devices)]
+            strategy = DDPStrategy( parallel_devices=parallel_devices, precision=precision)
     else:
         strategy = "auto"
 
