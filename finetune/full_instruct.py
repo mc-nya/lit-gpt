@@ -1,6 +1,7 @@
 # Copyright Lightning AI. Licensed under the Apache License 2.0, see LICENSE file.
 
 import os
+import math
 import sys
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ import torch
 from lightning.fabric.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
 
-from lightning.fabric.strategies import FSDPStrategy
+from lightning.fabric.strategies import FSDPStrategy,DDPStrategy
 from lightning.fabric.utilities import ThroughputMonitor
 
 # support running without installing as a package
@@ -30,25 +31,33 @@ from lit_gpt.utils import (
 )
 from scripts.prepare_alpaca import generate_prompt
 
-eval_interval = 600
+# Hyperparameters
+# iterations
+max_iters = 1000
+warmup_iters = 200
+eval_interval = 100
 save_interval = 1000
 eval_iters = 100
 eval_max_new_tokens = 100
 log_interval = 1
-devices = 1
+FSDP=False
+COSINE_LR = False
+WANDB = True
 
-# Hyperparameters
-learning_rate = 3e-3
-batch_size = 64 / devices
-micro_batch_size = 1
-gradient_accumulation_iters = batch_size // micro_batch_size
-assert gradient_accumulation_iters > 0
+# Trainer related
+batch_size = 64 
+micro_batch_size = 16
+gradient_accumulation_steps = 0 # will compute it later in setup() = bach_size / micro_batch_size / devices
 max_seq_length = None  # assign value to truncate
-epoch_size = 50000  # train dataset size
-num_epochs = 5
-max_iters = num_epochs * (epoch_size // micro_batch_size) // devices
+
+# opimizer
+learning_rate = 3e-4
+min_lr = 6e-5
 weight_decay = 0.02
-warmup_steps = 2 * (epoch_size // micro_batch_size) // devices // gradient_accumulation_iters  # 2 epochs
+lr_decay_iters = max_iters
+beta1 = 0.9
+beta2 = 0.95
+decay_lr = True
 
 hparams = {k: v for k, v in locals().items() if isinstance(v, (int, float, str)) and not k.startswith("_")}
 
@@ -61,34 +70,45 @@ def setup(
     config_file = "config.json",
     precision: Optional[str] = None,
     resume: Union[bool, Path] = False,
+    devices: int = 1,
 ) -> None:
     precision = precision or get_default_supported_precision(training=True)
 
     fabric_devices = devices
     if fabric_devices > 1:
-        strategy = FSDPStrategy(
-            auto_wrap_policy={Block},
-            activation_checkpointing_policy={Block},
-            state_dict_type="full",
-            limit_all_gathers=True,
-            cpu_offload=False,
-        )
+        if FSDP:
+        # For large models, FSDP is recommended to avoid OOMs
+            print("Using FSDP")
+            strategy = FSDPStrategy(
+                auto_wrap_policy={Block},
+                activation_checkpointing_policy={Block},
+                state_dict_type="full",
+                limit_all_gathers=True,
+                cpu_offload=False,
+            )
+        # For samll model in debug, we can use DDP
+        else:
+            print("Using DDP")
+            parallel_devices = [torch.device(f"cuda:{i}") for i in range(devices)]
+            strategy = DDPStrategy( parallel_devices=parallel_devices, precision=precision)
     else:
         strategy = "auto"
 
-    logger = CSVLogger(out_dir.parent, out_dir.name, flush_logs_every_n_steps=log_interval)
-    # logger = WandbLogger(name, save_dir="out", project="paramAttn" )
+    # log to local out directory
+    if not WANDB:
+        logger = CSVLogger("out", name, flush_logs_every_n_steps=log_interval)
+    else:
+        logger = WandbLogger(name, save_dir="out", project="paramAttn" )
 
     fabric = L.Fabric(devices=fabric_devices, strategy=strategy, precision=precision, loggers=logger)
 
     if hparams["gradient_accumulation_steps"] ==0:
-        assert batch_size % micro_batch_size == 0
-        gradient_accumulation_steps = batch_size // micro_batch_size
-        assert gradient_accumulation_steps % devices == 0
-        gradient_accumulation_steps = gradient_accumulation_steps // devices
+        assert batch_size % (micro_batch_size*devices) == 0
+        gradient_accumulation_steps = batch_size // (micro_batch_size * devices)
         assert gradient_accumulation_steps > 0
         hparams["gradient_accumulation_steps"] = gradient_accumulation_steps
     hparams["devices"] = devices
+    hparams["name"] = name
     
     fabric.print(hparams)
     fabric.launch(main,
@@ -115,13 +135,17 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
     config = Config.from_json(Path(config_file))
     checkpoint_path = checkpoint_dir / "lit_model.pth"
     fabric.print(f"Loading model {str(checkpoint_path)!r} with {config.__dict__}")
-    with fabric.init_module(empty_init=(devices > 1)):
+    with fabric.init_module(empty_init=(fabric.world_size > 1)):
         model = GPT(config)
+    model.apply(model._init_weights)
 
     fabric.print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
 
-    model = fabric.setup_module(model)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    # model = fabric.setup_module(model)
+    model = fabric.setup(model)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2), foreach=False
+    )
     optimizer = fabric.setup_optimizers(optimizer)
     state = {
         "model": model, "optimizer": optimizer, "hparams": hparams, "iter_num": 0, "step_count": 0, "total_lengths": 0
@@ -170,54 +194,71 @@ def train(
 
     throughput = ThroughputMonitor(fabric, window_size=50)
     total_t0 = time.perf_counter()
+    total_lengths = 0
 
-    for state["iter_num"] in range(state["iter_num"] + 1, max_iters + 1):
-        if state["step_count"] <= warmup_steps:
-            # linear warmup
-            lr = learning_rate * state["step_count"] / warmup_steps
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr
+    for state["iter_num"] in range(state["iter_num"], max_iters):
+        iter_num = state["iter_num"]
+        lr = get_lr(iter_num, warmup_iters, lr_decay_iters) if decay_lr else learning_rate
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = lr
 
+        if iter_num % eval_interval == 0:
+            t0 = time.perf_counter()
+            val_loss = validate(fabric, model, val_data, tokenizer, max_iters=eval_iters)
+            train_loss = validate(fabric, model, train_data, tokenizer, max_iters=eval_iters)
+            t1 = time.perf_counter() - t0
+            fabric.print(f"step {iter_num}: val loss {val_loss.item():.4f}, train loss {train_loss.item():.4f}, val time: {t1 * 1000:.2f}ms")
+            fabric.log_dict(metrics = {"eval/val_loss": val_loss.item(), 
+                                       "eval/time": t1 * 1000,
+                                       "eval/train_loss": train_loss.item(),
+                                       "eval/lr": lr,
+                                       "step": iter_num,
+                                       "eval/valtime": t1 * 1000}, step=iter_num//log_interval)
+            fabric.barrier()
+        if iter_num % save_interval == 0:
+            checkpoint_path = out_dir / f"iter-{iter_num:06d}-ckpt.pth"
+            save_checkpoint(fabric, state, checkpoint_path)        
+
+        # Accumulate gradients over multiple micro-batches
         iter_t0 = time.perf_counter()
-
-        input_ids, targets = get_batch(fabric, train_data, longest_seq_ix if state["iter_num"] == 1 else None)
-
-        is_accumulating = state["iter_num"] % gradient_accumulation_iters != 0
-        with fabric.no_backward_sync(model, enabled=is_accumulating):
-            logits = model(input_ids)
-            # shift the targets such that output n predicts token n+1
-            loss = chunked_cross_entropy(logits[..., :-1, :], targets[..., 1:], chunk_size=0)
-            fabric.backward(loss / gradient_accumulation_iters)
-
-        if not is_accumulating:
-            optimizer.step()
-            optimizer.zero_grad()
-            state["step_count"] += 1
-
-        state['total_lengths'] += input_ids.numel()
-        if state["iter_num"] % log_interval == 0:
+        iter_length = 0
+        gradient_accumulation_steps = hparams["gradient_accumulation_steps"]
+        for micro_step in range(gradient_accumulation_steps):
+            
+            is_accumulating = micro_step == gradient_accumulation_steps - 1
+            with fabric.no_backward_sync(model, enabled=is_accumulating):
+                input_ids, targets = get_batch(fabric, train_data, longest_seq_ix if iter_num == 1 else None)
+                logits = model(input_ids)
+                
+                # shift the targets such that output n predicts token n+1
+                loss = chunked_cross_entropy(logits[..., :-1, :], targets[..., 1:], chunk_size=0)
+                fabric.backward(loss / gradient_accumulation_steps)
+                iter_length += input_ids.numel()
+                # print(is_accumulating, logits.shape, targets.shape, input_ids.shape, targets.shape, input_ids.numel(),iter_length)
+        optimizer.step()
+        optimizer.zero_grad()
+        total_lengths += iter_length
+        if iter_num % log_interval == 0:
             loss_item = loss.item()  # expensive device-to-host synchronization
             t1 = time.perf_counter()
             throughput.update(
-                time=t1 - total_t0, batches=state["iter_num"], samples=state["iter_num"] * micro_batch_size,
-                lengths=state['total_lengths']
+                time=t1 - total_t0,
+                batches=iter_num,
+                samples=iter_num * batch_size,
+                lengths=total_lengths
             )
-            throughput.compute_and_log(step=state["iter_num"])
+            t_used = t1 - total_t0
+            est_time = t_used / (iter_num + 1) * max_iters - t_used
+            fabric.log_dict(metrics = {"running/iter": iter_num,
+                                       "running/loss": loss_item,
+                                       "running/lr": lr, 
+                                        "running/remaining_time": est_time / 60. / 60.,
+                                       "running/itertime": (t1 - iter_t0) * 1000,
+                                       "step": iter_num}, step=iter_num//log_interval)
             fabric.print(
-                f"iter {state['iter_num']} step {state['step_count']}: loss {loss_item:.4f}, iter time:"
-                f" {(t1 - iter_t0) * 1000:.2f}ms{' (optimizer.step)' if not is_accumulating else ''}"
+                f"iter {iter_num}: loss {loss_item:.4f}, iter time:"
+                f" {(t1 - iter_t0) * 1000:.2f}ms, est. time remaining: {est_time / 60. / 60.:.2f}h"
             )
-
-        if not is_accumulating and state['step_count'] % eval_interval == 0:
-            t0 = time.perf_counter()
-            val_loss = validate(fabric, model, val_data, tokenizer, max_iters=eval_iters)
-            t1 = time.perf_counter() - t0
-            fabric.print(f"step {state['iter_num']}: val loss {val_loss.item():.4f}, val time: {t1 * 1000:.2f}ms")
-            fabric.barrier()
-        if not is_accumulating and state['step_count'] % save_interval == 0:
-            checkpoint_path = out_dir / f"iter-{state['iter_num']:06d}-ckpt.pth"
-            save_checkpoint(fabric, state, checkpoint_path)
-
 
 # FSDP has issues with `inference_mode`
 @torch.no_grad()
@@ -231,21 +272,21 @@ def validate(fabric: L.Fabric, model: GPT, val_data: List[Dict], tokenizer: Toke
         losses[k] = chunked_cross_entropy(logits[..., :-1, :], targets[..., 1:], chunk_size=0)
     val_loss = losses.mean()
 
-    # produce an example:
-    instruction = "Recommend a movie for me to watch during the weekend and explain the reason."
-    fabric.print(instruction)
-    sample = {"instruction": instruction, "input": ""}
-    prompt = generate_prompt(sample)
-    encoded = tokenizer.encode(prompt, device=fabric.device)
-    with fabric.init_tensor():
-        # do not set `max_seq_length=max_returned_token` because memory is not a concern here
-        model.set_kv_cache(batch_size=1)
-    output = generate(
-        model, encoded, max_returned_tokens=len(encoded) + eval_max_new_tokens, temperature=0.8, eos_id=tokenizer.eos_id
-    )
-    model.clear_kv_cache()
-    output = tokenizer.decode(output)
-    fabric.print(output)
+    # # produce an example:
+    # instruction = "Recommend a movie for me to watch during the weekend and explain the reason."
+    # fabric.print(instruction)
+    # sample = {"instruction": instruction, "input": ""}
+    # prompt = generate_prompt(sample)
+    # encoded = tokenizer.encode(prompt, device=fabric.device)
+    # with fabric.init_tensor():
+    #     # do not set `max_seq_length=max_returned_token` because memory is not a concern here
+    #     model.set_kv_cache(batch_size=1)
+    # output = generate(
+    #     model, encoded, max_returned_tokens=len(encoded) + eval_max_new_tokens, temperature=0.8, eos_id=tokenizer.eos_id
+    # )
+    # model.clear_kv_cache()
+    # output = tokenizer.decode(output)
+    # fabric.print(output)
 
     model.train()
     return val_loss
@@ -297,6 +338,21 @@ def save_checkpoint(fabric, state, file_path: Path):
     fabric.print(f"Saving weights to {str(file_path)!r}")
     fabric.save(file_path, state)
 
+# learning rate decay scheduler (cosine with linear warmup)
+def get_lr(it: int, warmup_iters: int, max_iters: int) -> float:
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_iters:
+        return learning_rate * it / warmup_iters
+    # 2) if it > max_iters, return min learning rate
+    if it > max_iters:
+        return min_lr
+    if not COSINE_LR:
+        return learning_rate
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - warmup_iters) / (max_iters - warmup_iters)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
+    return min_lr + coeff * (learning_rate - min_lr)
 
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
