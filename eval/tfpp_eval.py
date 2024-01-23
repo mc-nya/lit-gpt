@@ -18,15 +18,10 @@ sys.path.append(str(wd))
 from generate.base import generate
 from lit_gpt.config import Config
 # from lit_gpt.model import GPT
-from lit_gpt.model_exp import GPT
+from lit_gpt.model import GPT
 from lit_gpt import Tokenizer
 #from lit_gpt import GPT, Config, Tokenizer
-from lit_gpt.utils import (
-    check_valid_checkpoint_dir,
-    get_default_supported_precision,
-    gptq_quantization,
-    load_checkpoint,
-)
+from lit_gpt.utils import check_valid_checkpoint_dir, get_default_supported_precision, load_checkpoint
 
 
 class EvalHarnessBase(BaseLM):
@@ -39,8 +34,8 @@ class EvalHarnessBase(BaseLM):
         self.model = model
         self.tokenizer = tokenizer
         self.batch_size_per_gpu = batch_size
-        # with fabric.init_tensor():
-        #     model.set_kv_cache(batch_size=batch_size)
+        with fabric.init_tensor():
+            model.set_kv_cache(batch_size=batch_size)
 
     @classmethod
     def create_from_arg_string(cls, arg_string, additional_config=None):
@@ -154,8 +149,7 @@ def run_eval_harness(
     tokenizer_dir: Optional[Path] = None,
     config_filepath: Optional[Path] = None,
     precision: Optional[str] = None,
-    quantize: Optional[Literal["bnb.nf4", "bnb.nf4-dq", "bnb.fp4",
-                               "bnb.fp4-dq", "bnb.int8", "gptq.int4"]] = None,
+    quantize: Optional[Literal["bnb.nf4", "bnb.nf4-dq", "bnb.fp4", "bnb.fp4-dq", "bnb.int8"]] = None,
     eval_tasks: List[str] = [
         "arc_challenge", "piqa", "hellaswag", "hendrycksTest-*"
     ],
@@ -203,8 +197,7 @@ def run_eval_harness(
 
     print(f"Loading model {str(checkpoint_path)!r} with {config.__dict__}",
           file=sys.stderr)
-    with fabric.init_module(empty_init=True), gptq_quantization(
-            quantize == "gptq.int4"):
+    with fabric.init_module(empty_init=True):
         model = GPT(config)
 
     model.eval()
