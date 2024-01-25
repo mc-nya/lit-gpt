@@ -33,8 +33,8 @@ from scripts.prepare_alpaca import generate_prompt
 
 # Hyperparameters
 # iterations
-max_iters = 1000
-warmup_iters = 200
+max_iters = 5000
+warmup_iters = 1000
 eval_interval = 100
 save_interval = 1000
 eval_iters = 100
@@ -51,13 +51,13 @@ gradient_accumulation_steps = 0 # will compute it later in setup() = bach_size /
 max_seq_length = None  # assign value to truncate
 
 # opimizer
-learning_rate = 3e-4
-min_lr = 6e-5
-weight_decay = 0.02
+learning_rate = 1e-5
+min_lr = 1e-6
+weight_decay = 0.01
 lr_decay_iters = max_iters
 beta1 = 0.9
 beta2 = 0.95
-decay_lr = True
+decay_lr = False
 
 hparams = {k: v for k, v in locals().items() if isinstance(v, (int, float, str)) and not k.startswith("_")}
 

@@ -6,7 +6,7 @@
 
 # Evaluate the model on the Hellaswag dataset after training
 python eval/tfpp_eval.py \
-    --checkpoint_dir "out/hellaswag" \
+    --checkpoint_dir "/scratch/oymak_root/oymak0/milii/paramattn/hellaswag/pythia-160m" \
     --model_file "lit_model_finetuned.pth" \
     --tokenizer_dir "/scratch/oymak_root/oymak0/shared_data/checkpoints/EleutherAI/pythia-160m" \
     --config_filepath "configs/pythia_160m.json" \
@@ -23,3 +23,22 @@ python eval/tfpp_eval.py \
     --eval_tasks "[hellaswag]" \
     --precision "32-true" \
     --save_filepath "out/eval/EleutherAI_pythia-160m_ckpt0.json"
+
+# Evaluate the model on Lambada dataset
+
+python eval/tfpp_eval.py \
+    --checkpoint_dir /scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-160m \
+    --model_file "iter-000000-ckpt.pth" \
+    --tokenizer_dir "/scratch/oymak_root/oymak0/shared_data/checkpoints/EleutherAI/pythia-160m" \
+    --config_filepath "configs/pythia_160m.json" \
+    --eval_tasks "[lambada_standard]" \
+    --precision "bf16-true" \
+    --save_filepath "out/eval/lambada-160m_ckpt0.json"
+python eval/tfpp_eval.py \
+    --checkpoint_dir /scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-160m \
+    --model_file "lit_model_finetuned.pth" \
+    --tokenizer_dir "/scratch/oymak_root/oymak0/shared_data/checkpoints/EleutherAI/pythia-160m" \
+    --config_filepath "configs/pythia_160m.json" \
+    --eval_tasks "[lambada_standard]" \
+    --precision "bf16-true" \
+    --save_filepath "out/eval/lambada-160m_final.json"

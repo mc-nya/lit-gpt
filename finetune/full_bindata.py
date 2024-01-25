@@ -35,31 +35,31 @@ from scripts.prepare_alpaca import generate_prompt
 
 # Hyperparameters
 # iterations
-max_iters = 1000
+max_iters = 10000
 warmup_iters = 200
 eval_interval = 100
 save_interval = 1000
 eval_iters = 100
 eval_max_new_tokens = 100
-log_interval = 1
+log_interval = 10
 FSDP=False
 COSINE_LR = False
 WANDB = True
 
 # Trainer related
 batch_size = 64
-micro_batch_size = 16
+micro_batch_size = 8
 gradient_accumulation_steps = 0 # will compute it later in setup() = bach_size / micro_batch_size / devices
 max_seq_length = None  # assign value to truncate
 
 # opimizer
-learning_rate = 3e-4
-min_lr = 6e-5
-weight_decay = 0.02
+learning_rate = 1e-5
+min_lr = 1e-6
+weight_decay = 0.01
 lr_decay_iters = max_iters
 beta1 = 0.9
 beta2 = 0.95
-decay_lr = True
+decay_lr = False
 
 hparams = {k: v for k, v in locals().items() if isinstance(v, (int, float, str)) and not k.startswith("_")}
 
