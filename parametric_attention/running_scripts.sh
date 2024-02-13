@@ -26,3 +26,67 @@ python finetune/full_bindata.py \
 --config_file "configs/pythia_160m.json" \
 --devices 2
 
+
+mkdir -p /tmp/milii/lambada
+cp -r /nfs/turbo/coe-sodalab/shared_data/lambada/* /tmp/milii/lambada
+mkdir -p /tmp/milii/EleutherAI
+cp -r /scratch/oymak_root/oymak0/shared_data/checkpoints/EleutherAI/pythia-160m /tmp/milii/EleutherAI
+rm -rf /tmp/milii
+
+python finetune/full_bindata_statistics.py \
+--checkpoint_dir /tmp/milii/EleutherAI/pythia-160m \
+--data_dir //tmp/milii/lambada/ \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-160m" \
+--name "lambada-160-pythia" \
+--config_file "configs/pythia_160m.json" \
+--devices 2
+
+# Mistral experiment
+python finetune/full_bindata_statistics.py \
+--checkpoint_dir /scratch/oymak_root/oymak0/shared_data/checkpoints/mistralai/Mistral-7B-Instruct-v0.1 \
+--data_dir /nfs/turbo/coe-sodalab/shared_data/lambada_mistral/ \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/lambada/Mistral-7B/" \
+--name "Mistral-7B-Instruct-v0.1" \
+--config_file "configs/Mistral-7B.json" \
+--devices 2
+
+
+python finetune/full_bindata_finetune.py \
+--checkpoint_dir /tmp/milii/EleutherAI/pythia-160m \
+--data_dir //tmp/milii/lambada/ \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-160m" \
+--name "lambada-160-pythia" \
+--config_file "configs/pythia_160m.json" \
+--devices 4
+
+python finetune/full_bindata.py \
+--checkpoint_dir /tmp/milii/EleutherAI/pythia-160m \
+--data_dir /tmp/milii/lambada/ \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-debug" \
+--name "lambada-160-pythia" \
+--config_file "configs/pythia_160m.json" \
+--devices 4
+
+
+python finetune/full_bindata_finetune_param_only.py \
+--checkpoint_dir /tmp/milii/EleutherAI/pythia-160m \
+--data_dir //tmp/milii/lambada/ \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-160m" \
+--name "lambada-160-pythia" \
+--config_file "configs/pythia_160m.json" \
+--devices 2
+
+python finetune/full_bindata_sparse.py \
+--checkpoint_dir /tmp/milii/EleutherAI/pythia-160m \
+--data_dir /tmp/milii/lambada/ \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-debug" \
+--name "lambada-160-pythia" \
+--config_file "configs/pythia_160m.json" \
+--devices 4
+python finetune/full_bindata_sparse.py \
+--checkpoint_dir /tmp/milii/EleutherAI/pythia-160m \
+--data_dir /tmp/milii/lambada/ \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/lambada/pythia-debug" \
+--name "lambada-160-pythia" \
+--config_file "configs/pythia-160m_4096.json" \
+--devices 4

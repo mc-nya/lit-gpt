@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import lightning as L
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 from lightning.fabric.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
@@ -22,7 +23,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from generate.base import generate
-from lit_gpt.model import GPT, Block, Config
+from lit_gpt.model_finetune_att import GPT, Block, Config
 from lit_gpt.tokenizer import Tokenizer
 from lit_gpt.utils import (
     check_valid_checkpoint_dir,
@@ -34,7 +35,6 @@ from lit_gpt.utils import (
 from scripts.prepare_alpaca import generate_prompt
 
 # Hyperparameters
-# iterations
 max_iters = 500
 warmup_iters = 200
 eval_interval = 10
@@ -54,6 +54,7 @@ max_seq_length = None  # assign value to truncate
 
 # opimizer
 learning_rate = 1e-5
+beta_lr = 1e-2
 min_lr = 1e-6
 weight_decay = 0.01
 lr_decay_iters = max_iters
@@ -87,7 +88,6 @@ def setup(
                 state_dict_type="full",
                 limit_all_gathers=True,
                 cpu_offload=False,
-                # use_orig_params=True,
             )
         # For samll model in debug, we can use DDP
         else:
@@ -139,18 +139,23 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
     fabric.print(f"Loading model {str(checkpoint_path)!r} with {config.__dict__}")
     with fabric.init_module(empty_init=(fabric.world_size > 1)):
         model = GPT(config)
-    # model.apply(model._init_weights)
+    model.apply(model._init_weights)
 
     fabric.print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
 
-    #model = fabric.setup_module(model)
+    # model = fabric.setup_module(model)
     model = fabric.setup(model)
+    # optimizer = torch.optim.AdamW(
+    #     model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2), foreach=False
+    # )
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2), foreach=False
+        model.parameter_exclude_names(["beta"]), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2), foreach=False
     )
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-
-    optimizer = fabric.setup_optimizers(optimizer)
+    beta_optimizer = torch.optim.Adam(
+        model.parameters_by_names(["beta"]), lr = beta_lr, betas=(beta1, beta2)
+    )
+    # optimizer = fabric.setup_optimizers(optimizer)
+    optimizer = fabric.setup_optimizers(optimizer, beta_optimizer)
     state = {
         "model": model, "optimizer": optimizer, "hparams": hparams, "iter_num": 0, "step_count": 0, "total_lengths": 0
     }
@@ -166,7 +171,7 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
         fabric.print(f"Resuming training from {resume}")
         fabric.load(resume, state)
     else:
-        load_checkpoint(fabric, state["model"], checkpoint_path)
+        load_checkpoint(fabric, state["model"], checkpoint_path, strict=False)
 
     fabric.seed_everything(1337 + fabric.global_rank)
 
@@ -176,9 +181,9 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
     if fabric.device.type == "cuda":
         fabric.print(f"Memory used: {torch.cuda.max_memory_allocated() / 1e9:.02f} GB")
 
-    # Save the final checkpoint at the end of training
-    save_path = out_dir / "lit_model_finetuned.pth"
-    save_checkpoint(fabric, {"model": state["model"]}, save_path)
+    # # Save the final checkpoint at the end of training
+    # save_path = out_dir / "lit_model_finetuned.pth"
+    # save_checkpoint(fabric, {"model": state["model"]}, save_path)
 
 
 def train(
@@ -191,8 +196,12 @@ def train(
 ) -> None:
     model = state["model"]
     optimizer = state["optimizer"]
+    print(optimizer)
 
-    validate(fabric, model, val_dataloader, max_iters=2)  # sanity check
+
+    loss = validate(fabric, model, train_dataloader, max_iters=10)  # sanity check
+    # print perplexity
+    fabric.print(f"Initial train loss: {loss.item():.4f}, perplexity: {math.exp(loss.item()):.4f}")
 
     throughput = ThroughputMonitor(fabric, window_size=50)
     total_t0 = time.perf_counter()
@@ -200,7 +209,7 @@ def train(
     for state["iter_num"] in range(state["iter_num"], max_iters):
         iter_num = state["iter_num"]
         lr = get_lr(iter_num, warmup_iters, lr_decay_iters) if decay_lr else learning_rate
-        for param_group in optimizer.param_groups:
+        for param_group in optimizer[0].param_groups:
             param_group["lr"] = lr
 
         if iter_num % eval_interval == 0:
@@ -219,6 +228,7 @@ def train(
                                        "eval/train_perplexity": math.exp(train_loss.item()),
                                         "eval/val_perplexity": math.exp(val_loss.item())}, step=iter_num//log_interval)
             fabric.barrier()
+
         if iter_num % save_interval == 0:
             checkpoint_path = out_dir / f"iter-{iter_num:06d}-ckpt.pth"
             save_checkpoint(fabric, state, checkpoint_path)
@@ -236,9 +246,30 @@ def train(
                 loss = chunked_cross_entropy(logits, targets)
                 fabric.backward(loss / gradient_accumulation_steps)
             if not is_accumulating:
-                optimizer.step()
-                optimizer.zero_grad()
+                for optim in optimizer:
+                    optim.step()
+                for optim in optimizer:
+                    optim.zero_grad()
+        # optimizer.step()
+        
+        # optimizer.zero_grad()
+        
         if iter_num % log_interval == 0:
+            # get alpha and beta
+            fabric.barrier()
+            # alpha = model.get_block_buffers_by_name("alpha").detach().cpu().numpy()
+            beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+            def sigmoid(x):
+                return 1 / (1 + np.exp(-x))
+            # alpha = sigmoid(alpha)*2
+            # beta = sigmoid(beta)*2-1
+            beta = np.exp(-np.exp(beta))
+            # alpha = np.round(alpha, 3)
+            beta = np.round(beta, 3)
+            # fabric.print("alpha", alpha)
+            fabric.print("beta", beta)
+            
+
             loss_item = loss.item()  # expensive device-to-host synchronization
             t1 = time.perf_counter()
             throughput.update(
