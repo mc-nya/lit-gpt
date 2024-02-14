@@ -8,9 +8,9 @@
 # For a text file dataset, we run full_instruct.py with the following command:
 # This ensure we load tokenizers from the correct directory and use the correct config file.
 python finetune/full_instruct.py \
---checkpoint_dir /scratch/oymak_root/oymak0/shared_data/checkpoints/EleutherAI/pythia-160m \
+--checkpoint_dir /scratch/jiasi_root/jiasi0/xuechenz/checkpoints/EleutherAI/pythia-160m \
 --data_dir data/hellaswag \
---out_dir "/scratch/oymak_root/oymak0/milii/paramattn/hellaswag/pythia-160m" \
+--out_dir "/scratch/jiasi_root/jiasi0/xuechenz/paramattn/hellaswag/pythia-160m" \
 --name "hellaswag-160-pythia" \
 --config_file "configs/pythia_160m.json" \
 --devices 2 
