@@ -202,7 +202,7 @@ def train(
     model = state["model"]
     optimizer = state["optimizer"]
 
-    num_iters = 10
+    num_iters = 1
     # grid search for beta
     fabric.seed_everything(1337 + fabric.global_rank)
     loss = validate(fabric, model, train_dataloader, max_iters=num_iters)  # sanity check
@@ -213,20 +213,24 @@ def train(
 
     # start grid search
     # try a monte carlo search for beta
-    # beta is in the range of (0.9 to 1), and it is a 3 dimension vector, we then map it to a "beta" dimension vector by 
-    # group them
+    # beta is in the range of (0.9 to 1), and it is a 3 dimension vector, 
+    # we then map it to a "beta" dimension vector by grouping them
     result = []
     group_size = 3
+    beta_shape = model.get_block_buffers_by_name("beta").detach().cpu().numpy().squeeze().shape
+    assert beta_shape[0] % group_size == 0
+
     for _ in range(100):
-        fabric.seed_everything(1337 + fabric.global_rank)
+        # generate random number for beta 
+        # only seed torch seed for data generation, Do not seed for np.random
+        torch.manual_seed(1337 + fabric.global_rank)
         b = np.random.rand(group_size) * 0.1 + 0.9
-        old_beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
-        old_beta = old_beta.squeeze()
-        print(old_beta.shape)
-        assert len(old_beta) % group_size == 0
-        new_beta = np.ones_like(old_beta).reshape(len(old_beta)//group_size, group_size) * b
-        new_beta = new_beta.view(-1)
+
+        # do group wise mutiplication
+        new_beta = np.ones(beta_shape[0]).reshape(group_size, beta_shape[0]//group_size) * b.reshape(group_size, 1)
+        new_beta = new_beta.reshape(beta_shape)
         model.set_value_to_block_buffers_by_name("beta", torch.tensor(new_beta, device=fabric.device))
+
         loss = validate(fabric, model, train_dataloader, max_iters=num_iters)
         fabric.barrier()
         b = model.get_block_buffers_by_name("beta").detach().cpu().numpy()

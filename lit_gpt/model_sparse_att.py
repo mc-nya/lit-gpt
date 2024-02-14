@@ -278,6 +278,8 @@ class CausalSelfAttention(nn.Module):
     def clip_tail(self, att: torch.Tensor, k_ratio=0.1) -> torch.Tensor:
         # att B, nh, T, T
         _, _, T, _ = att.size()
+        # This is a multi-functional function, when k_ratio > 1.5, we assume it is an integer, we choose top k values as our attention
+        # when k_ratio <= 1.5, we assume it is a float, we choose top seq_length(T)^k_ratio values as our attention
         if k_ratio>1.5:
             with torch.no_grad():
                 k_ratio = k_ratio.long()
@@ -289,6 +291,7 @@ class CausalSelfAttention(nn.Module):
         elif k_ratio<=1.5:
             with torch.no_grad():
                 seq_length = torch.arange(T, device=att.device).long()+1
+                # Compute how many elements we should keep for each row, and make sure it is at least 10
                 n_top = (seq_length ** k_ratio).clamp(min=10).long()
                 def row_clip_mask(att_row, n_top):
                     top_values, arg_top = torch.topk(att_row, k=n_top, dim=-1)
