@@ -23,7 +23,8 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from generate.base import generate
-from lit_gpt.model_finetune_att import GPT, Block, Config
+from lit_gpt.gpt_2_PTS import GPT, Block
+from lit_gpt.gpt_2_PTS import GPTConfig as Config
 from lit_gpt.tokenizer import Tokenizer
 from lit_gpt.utils import (
     check_valid_checkpoint_dir,
@@ -35,26 +36,26 @@ from lit_gpt.utils import (
 from scripts.prepare_alpaca import generate_prompt
 
 # Hyperparameters
-max_iters = 1000
+max_iters = 5000
 warmup_iters = 200
-eval_interval = 10
-save_interval = 100
+eval_interval = 100
+save_interval = 500
 eval_iters = 100
 eval_max_new_tokens = 100
-log_interval = 1
-FSDP=True
+log_interval = 10
+FSDP=False
 COSINE_LR = False
 WANDB = True
 
 # Trainer related
 batch_size = 64
-micro_batch_size = 1
+micro_batch_size = 4
 gradient_accumulation_steps = 0 # will compute it later in setup() = bach_size / micro_batch_size / devices
 max_seq_length = None  # assign value to truncate
 
 # opimizer
-learning_rate = 1e-5
-beta_lr = 1e-2
+learning_rate = 3e-5
+beta_lr = 1e-4
 min_lr = 1e-6
 weight_decay = 0.01
 lr_decay_iters = max_iters
@@ -67,9 +68,9 @@ hparams = {k: v for k, v in locals().items() if isinstance(v, (int, float, str))
 
 def setup(
     data_dir: Path = Path("data/alpaca"),
-    checkpoint_dir: Path = Path("checkpoints/stabilityai/stablelm-base-alpha-3b"),
-    out_dir: Path = Path("out/full/alpaca"),
-    name: str = "stablelm-base-alpha-3b",
+    checkpoint_dir: Path = Path("gpt2"),
+    out_dir: Path = Path("out/full/gpt2"),
+    name: str = "gpt2_full",
     config_file = "config.json",
     precision: Optional[str] = None,
     resume: Union[bool, Path] = False,
@@ -88,6 +89,7 @@ def setup(
                 state_dict_type="full",
                 limit_all_gathers=True,
                 cpu_offload=False,
+                use_orig_params=True
             )
         # For samll model in debug, we can use DDP
         else:
@@ -127,7 +129,7 @@ def setup(
 def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
          config_file: str, name: str, resume: Union[bool, Path],
          hparams: dict) -> None:
-    check_valid_checkpoint_dir(checkpoint_dir)
+    #check_valid_checkpoint_dir(checkpoint_dir)
     fabric.seed_everything(1337)  # same seed for every process to init model (FSDP)
 
     if fabric.global_rank == 0:
@@ -135,11 +137,16 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
 
 
     config = Config.from_json(Path(config_file))
-    checkpoint_path = checkpoint_dir / "lit_model.pth"
-    fabric.print(f"Loading model {str(checkpoint_path)!r} with {config.__dict__}")
-    with fabric.init_module(empty_init=(fabric.world_size > 1)):
-        model = GPT(config)
-    model.apply(model._init_weights)
+    if checkpoint_dir.name.startswith("pretrain_"):
+        with fabric.init_module(empty_init=(fabric.world_size > 1)):
+            model = GPT.from_pretrained(checkpoint_dir.name.split("_")[1])
+    else:
+        check_valid_checkpoint_dir(checkpoint_dir)
+        checkpoint_path = checkpoint_dir / "lit_model.pth"
+        fabric.print(f"Loading model {str(checkpoint_path)!r} with {config.__dict__}")
+        with fabric.init_module(empty_init=(fabric.world_size > 1)):
+            model = GPT(config)
+        model.apply(model._init_weights)
 
     fabric.print(f"Number of trainable parameters: {num_parameters(model, requires_grad=True):,}")
 
@@ -154,6 +161,9 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
     beta_optimizer = torch.optim.Adam(
         model.parameters_by_names(["beta"]), lr = beta_lr, betas=(beta1, beta2)
     )
+    # beta_optimizer = torch.optim.SGD(
+    #     model.parameters_by_names(["beta"]), lr = beta_lr
+    # )
     # optimizer = fabric.setup_optimizers(optimizer)
     optimizer = fabric.setup_optimizers(optimizer, beta_optimizer)
     state = {
@@ -170,8 +180,13 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
     if resume:
         fabric.print(f"Resuming training from {resume}")
         fabric.load(resume, state)
+    elif checkpoint_dir.name.startswith("pretrain_"):
+        fabric.print(f"Loading pretrained model from {checkpoint_dir}")
+
+        # pretrained = model.from_pretrained(checkpoint_dir.name.split("_")[1])
+        # state["model"].load_state_dict(pretrained.state_dict(), strict=True)
     else:
-        load_checkpoint(fabric, state["model"], checkpoint_path, strict=False)
+        load_checkpoint(fabric, state["model"], checkpoint_path, strict=True)
 
     fabric.seed_everything(1337 + fabric.global_rank)
 
@@ -181,9 +196,9 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
     if fabric.device.type == "cuda":
         fabric.print(f"Memory used: {torch.cuda.max_memory_allocated() / 1e9:.02f} GB")
 
-    # # Save the final checkpoint at the end of training
-    # save_path = out_dir / "lit_model_finetuned.pth"
-    # save_checkpoint(fabric, {"model": state["model"]}, save_path)
+    # Save the final checkpoint at the end of training
+    save_path = out_dir / "lit_model_finetuned.pth"
+    save_checkpoint(fabric, {"model": state["model"]}, save_path)
 
 
 def train(
@@ -345,15 +360,6 @@ def get_batch(
     else:
         x, y = fabric.to_device((x, y))
     return x, y
-
-
-def get_longest_seq_length(data: List[Dict]) -> Tuple[int, int]:
-    # find out the minimum max_seq_length required during fine-tuning (saves memory!)
-    lengths = [len(d["input_ids"]) for d in data]
-    longest_seq_length = max(lengths)
-    longest_seq_ix = lengths.index(longest_seq_length)
-    return longest_seq_length, longest_seq_ix
-
 
 def save_checkpoint(fabric, state, file_path: Path):
     fabric.print(f"Saving weights to {str(file_path)!r}")
