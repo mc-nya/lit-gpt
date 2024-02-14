@@ -18,6 +18,12 @@ from lightning.fabric.strategies import FSDPStrategy,DDPStrategy
 from lightning.fabric.utilities import ThroughputMonitor
 from torch.utils.data import DataLoader, IterableDataset
 
+import logging
+log = logging.getLogger("pytorch_lightning")
+log.propagate = False
+log.setLevel(logging.ERROR)
+
+
 # support running without installing as a package
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
@@ -34,6 +40,8 @@ from lit_gpt.utils import (
 )
 from scripts.prepare_alpaca import generate_prompt
 
+import logging
+logging.basicConfig(level=logging.WARN)
 # Hyperparameters
 max_iters = 500
 warmup_iters = 200
@@ -48,7 +56,7 @@ WANDB = False
 
 # Trainer related
 batch_size = 64
-micro_batch_size = 4
+micro_batch_size = 1
 gradient_accumulation_steps = 0 # will compute it later in setup() = bach_size / micro_batch_size / devices
 max_seq_length = None  # assign value to truncate
 
@@ -193,104 +201,156 @@ def train(
 ) -> None:
     model = state["model"]
     optimizer = state["optimizer"]
-    print(optimizer)
 
-
-    loss = validate(fabric, model, train_dataloader, max_iters=10)  # sanity check
+    num_iters = 10
+    # grid search for beta
+    fabric.seed_everything(1337 + fabric.global_rank)
+    loss = validate(fabric, model, train_dataloader, max_iters=num_iters)  # sanity check
+    beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+    fabric.print("beta", beta)
     # print perplexity
     fabric.print(f"Initial train loss: {loss.item():.4f}, perplexity: {math.exp(loss.item()):.4f}")
 
-    throughput = ThroughputMonitor(fabric, window_size=50)
-    total_t0 = time.perf_counter()
-    train_iter = iter(train_dataloader)
-    for state["iter_num"] in range(state["iter_num"], max_iters):
-        iter_num = state["iter_num"]
-        lr = get_lr(iter_num, warmup_iters, lr_decay_iters) if decay_lr else learning_rate
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = lr
-
-        if iter_num % eval_interval == 0:
-            t0 = time.perf_counter()
-            val_loss = validate(fabric, model, val_dataloader, max_iters=eval_iters)
-            train_loss = validate(fabric, model, train_dataloader, max_iters=eval_iters)
-            t1 = time.perf_counter() - t0
-            fabric.print(f"step {iter_num}: val loss {val_loss.item():.4f}, train loss {train_loss.item():.4f}, val time: {t1 * 1000:.2f}ms"
-                         f" perplexity: {math.exp(val_loss.item()):.4f}")
-            fabric.log_dict(metrics = {"eval/val_loss": val_loss.item(),
-                                       "eval/time": t1 * 1000,
-                                       "eval/train_loss": train_loss.item(),
-                                       "eval/lr": lr,
-                                       "step": iter_num,
-                                       "eval/valtime": t1 * 1000,
-                                       "eval/train_perplexity": math.exp(train_loss.item()),
-                                        "eval/val_perplexity": math.exp(val_loss.item())}, step=iter_num//log_interval)
-            fabric.barrier()
-
-        if iter_num % save_interval == 0:
-            checkpoint_path = out_dir / f"iter-{iter_num:06d}-ckpt.pth"
-            save_checkpoint(fabric, state, checkpoint_path)
-
-        # Accumulate gradients over multiple micro-batches
-        iter_t0 = time.perf_counter()
-        gradient_accumulation_steps = hparams["gradient_accumulation_steps"]
-        for micro_step in range(gradient_accumulation_steps):
-
-            is_accumulating = micro_step == gradient_accumulation_steps - 1
-            with fabric.no_backward_sync(model, enabled=is_accumulating):
-                input_ids, targets = next(train_iter)
-                logits = model(input_ids)
-
-                loss = chunked_cross_entropy(logits, targets)
-                fabric.backward(loss / gradient_accumulation_steps)
-            if not is_accumulating:
-                optimizer.step()
-                optimizer.zero_grad()
+    # start grid search
+    # try a monte carlo search for beta
+    # beta is in the range of (0.9 to 1), and it is a 3 dimension vector, we then map it to a "beta" dimension vector by 
+    # group them
+    result = []
+    group_size = 3
+    for _ in range(100):
+        fabric.seed_everything(1337 + fabric.global_rank)
+        b = np.random.rand(group_size) * 0.1 + 0.9
+        old_beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+        old_beta = old_beta.squeeze()
+        print(old_beta.shape)
+        assert len(old_beta) % group_size == 0
+        new_beta = np.ones_like(old_beta).reshape(len(old_beta)//group_size, group_size) * b
+        new_beta = new_beta.view(-1)
+        model.set_value_to_block_buffers_by_name("beta", torch.tensor(new_beta, device=fabric.device))
+        loss = validate(fabric, model, train_dataloader, max_iters=num_iters)
+        fabric.barrier()
+        b = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+        fabric.print(f"beta: {b}, train loss: {loss.item():.4f}, perplexity: {math.exp(loss.item()):.4f}")
+        result.append((b, loss.item(), math.exp(loss.item())))
+    result = sorted(result, key=lambda x: x[2])
+    fabric.print("lowest loss", result[0][1], "perplexity", result[0][2], "beta", result[0][0])
 
 
-        # optimizer.step()
+    # beta = np.linspace(0.9, 1, 20)
+   
+    # for b in beta:
+    #     fabric.seed_everything(1337 + fabric.global_rank)
+    #     old_beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+    #     new_beta = np.ones_like(old_beta) * b
+    #     model.set_value_to_block_buffers_by_name("beta", torch.tensor(new_beta, device=fabric.device))
+    #     loss = validate(fabric, model, train_dataloader, max_iters=num_iters) 
+    #     fabric.barrier()
+    #     b = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+    #     fabric.print(f"beta: {b}, train loss: {loss.item():.4f}, perplexity: {math.exp(loss.item()):.4f}")
+    
+    # for constant number beta (beta>2)
+    # beta = np.linspace(5, 2048, 60)
+    # for b in beta:
+    #     fabric.seed_everything(1337 + fabric.global_rank)
+    #     old_beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+    #     new_beta = np.ones_like(old_beta) * b
+    #     model.set_value_to_block_buffers_by_name("beta", torch.tensor(new_beta, device=fabric.device))
+    #     loss = validate(fabric, model, train_dataloader, max_iters=num_iters) 
+    #     fabric.barrier()
+    #     b = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+    #     fabric.print(f"beta: {b}, train loss: {loss.item():.4f}, perplexity: {math.exp(loss.item()):.4f}")
+
+    # throughput = ThroughputMonitor(fabric, window_size=50)
+    # total_t0 = time.perf_counter()
+    # train_iter = iter(train_dataloader)
+    # for state["iter_num"] in range(state["iter_num"], max_iters):
+    #     iter_num = state["iter_num"]
+    #     lr = get_lr(iter_num, warmup_iters, lr_decay_iters) if decay_lr else learning_rate
+    #     for param_group in optimizer.param_groups:
+    #         param_group["lr"] = lr
+
+    #     if iter_num % eval_interval == 0:
+    #         t0 = time.perf_counter()
+    #         val_loss = validate(fabric, model, val_dataloader, max_iters=eval_iters)
+    #         train_loss = validate(fabric, model, train_dataloader, max_iters=eval_iters)
+    #         t1 = time.perf_counter() - t0
+    #         fabric.print(f"step {iter_num}: val loss {val_loss.item():.4f}, train loss {train_loss.item():.4f}, val time: {t1 * 1000:.2f}ms"
+    #                      f" perplexity: {math.exp(val_loss.item()):.4f}")
+    #         fabric.log_dict(metrics = {"eval/val_loss": val_loss.item(),
+    #                                    "eval/time": t1 * 1000,
+    #                                    "eval/train_loss": train_loss.item(),
+    #                                    "eval/lr": lr,
+    #                                    "step": iter_num,
+    #                                    "eval/valtime": t1 * 1000,
+    #                                    "eval/train_perplexity": math.exp(train_loss.item()),
+    #                                     "eval/val_perplexity": math.exp(val_loss.item())}, step=iter_num//log_interval)
+    #         fabric.barrier()
+
+    #     if iter_num % save_interval == 0:
+    #         checkpoint_path = out_dir / f"iter-{iter_num:06d}-ckpt.pth"
+    #         save_checkpoint(fabric, state, checkpoint_path)
+
+    #     # Accumulate gradients over multiple micro-batches
+    #     iter_t0 = time.perf_counter()
+    #     gradient_accumulation_steps = hparams["gradient_accumulation_steps"]
+    #     for micro_step in range(gradient_accumulation_steps):
+
+    #         is_accumulating = micro_step == gradient_accumulation_steps - 1
+    #         with fabric.no_backward_sync(model, enabled=is_accumulating):
+    #             input_ids, targets = next(train_iter)
+    #             logits = model(input_ids)
+
+    #             loss = chunked_cross_entropy(logits, targets)
+    #             fabric.backward(loss / gradient_accumulation_steps)
+    #         if not is_accumulating:
+    #             optimizer.step()
+    #             optimizer.zero_grad()
+
+
+    #     # optimizer.step()
         
-        # optimizer.zero_grad()
+    #     # optimizer.zero_grad()
         
-        if iter_num % log_interval == 0:
-            # get alpha and beta
-            fabric.barrier()
-            # alpha = model.get_block_buffers_by_name("alpha").detach().cpu().numpy()
-            beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
-            def sigmoid(x):
-                return 1 / (1 + np.exp(-x))
-            # alpha = sigmoid(alpha)*2
-            # beta = sigmoid(beta)*2-1
-            beta = np.exp(-np.exp(beta))
-            # alpha = np.round(alpha, 3)
-            beta = np.round(beta, 3)
-            # fabric.print("alpha", alpha)
-            fabric.print("beta", beta)
+    #     if iter_num % log_interval == 0:
+    #         # get alpha and beta
+    #         fabric.barrier()
+    #         # alpha = model.get_block_buffers_by_name("alpha").detach().cpu().numpy()
+    #         beta = model.get_block_buffers_by_name("beta").detach().cpu().numpy()
+    #         def sigmoid(x):
+    #             return 1 / (1 + np.exp(-x))
+    #         # alpha = sigmoid(alpha)*2
+    #         # beta = sigmoid(beta)*2-1
+    #         beta = np.exp(-np.exp(beta))
+    #         # alpha = np.round(alpha, 3)
+    #         beta = np.round(beta, 3)
+    #         # fabric.print("alpha", alpha)
+    #         fabric.print("beta", beta)
             
 
-            loss_item = loss.item()  # expensive device-to-host synchronization
-            t1 = time.perf_counter()
-            throughput.update(
-                time=t1 - total_t0,
-                batches=iter_num,
-                samples=iter_num * batch_size,
-                lengths=iter_num * batch_size * model.max_seq_length,
-            )
-            t_used = t1 - total_t0
-            est_time = t_used / (iter_num + 1) * max_iters - t_used
-            fabric.log_dict(metrics = {"running/iter": iter_num,
-                                       "running/loss": loss_item,
-                                       "running/lr": lr,
-                                        "running/remaining_time": est_time / 60. / 60.,
-                                       "running/itertime": (t1 - iter_t0) * 1000,
-                                       "step": iter_num,
-                                       "running/perplexity": math.exp(loss_item)},
-                                        step=iter_num//log_interval,
-                                       )
-            fabric.print(
-                f"iter {iter_num}: loss {loss_item:.4f}, iter time:"
-                f" {(t1 - iter_t0) * 1000:.2f}ms, est. time remaining: {est_time / 60. / 60.:.2f}h"
-                f" perplexity: {math.exp(loss_item):.4f}"
-            )
+    #         loss_item = loss.item()  # expensive device-to-host synchronization
+    #         t1 = time.perf_counter()
+    #         throughput.update(
+    #             time=t1 - total_t0,
+    #             batches=iter_num,
+    #             samples=iter_num * batch_size,
+    #             lengths=iter_num * batch_size * model.max_seq_length,
+    #         )
+    #         t_used = t1 - total_t0
+    #         est_time = t_used / (iter_num + 1) * max_iters - t_used
+    #         fabric.log_dict(metrics = {"running/iter": iter_num,
+    #                                    "running/loss": loss_item,
+    #                                    "running/lr": lr,
+    #                                     "running/remaining_time": est_time / 60. / 60.,
+    #                                    "running/itertime": (t1 - iter_t0) * 1000,
+    #                                    "step": iter_num,
+    #                                    "running/perplexity": math.exp(loss_item)},
+    #                                     step=iter_num//log_interval,
+    #                                    )
+    #         fabric.print(
+    #             f"iter {iter_num}: loss {loss_item:.4f}, iter time:"
+    #             f" {(t1 - iter_t0) * 1000:.2f}ms, est. time remaining: {est_time / 60. / 60.:.2f}h"
+    #             f" perplexity: {math.exp(loss_item):.4f}"
+    #         )
 
 # FSDP has issues with `inference_mode`
 @torch.no_grad()

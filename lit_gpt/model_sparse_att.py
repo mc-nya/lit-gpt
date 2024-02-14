@@ -53,9 +53,9 @@ class GPT(nn.Module):
     def reset_block_buffers_by_name(self, name):
         for block in self.transformer.h:
             getattr(block.attn, name).zero_()
-    def set_value_to_block_buffers_by_name(self, name, value):
-        for block in self.transformer.h:
-            getattr(block.attn, name).fill_(value)
+    def set_value_to_block_buffers_by_name(self, name, values):
+        for block,v in zip(self.transformer.h, values):
+            getattr(block.attn, name).fill_(v)
         
 
     @property
@@ -279,20 +279,23 @@ class CausalSelfAttention(nn.Module):
         # att B, nh, T, T
         _, _, T, _ = att.size()
         if k_ratio>1.5:
-            top_values, arg_top = torch.topk(att, k=k_ratio, dim=-1)
-            # fill tail with -inf
-            mask = torch.zeros_like(att).scatter(-1, arg_top, 1)
+            with torch.no_grad():
+                k_ratio = k_ratio.long()
+                top_values, arg_top = torch.topk(att, k=k_ratio, dim=-1)
+                # fill tail with -inf
+                mask = torch.zeros_like(att).scatter(-1, arg_top, 1)
             att = att.masked_fill(mask == 0, float("-inf"))
             return att
         elif k_ratio<=1.5:
-            seq_length = torch.arange(T, device=att.device).long()+1
-            n_top = (seq_length ** k_ratio).clamp(min=10).long()
-            def row_clip_tail(att_row, n_top):
-                top_values, arg_top = torch.topk(att_row, k=n_top, dim=-1)
-                mask = torch.zeros_like(att_row).scatter(-1, arg_top, 1)
-                att_row = att_row.masked_fill(mask == 0, float("-inf"))
-                return att_row
-            att = torch.stack([row_clip_tail(att_row, n) for att_row, n in zip(torch.permute(att, [2, 0, 1, 3]), n_top)]).permute([1, 2, 0, 3])
+            with torch.no_grad():
+                seq_length = torch.arange(T, device=att.device).long()+1
+                n_top = (seq_length ** k_ratio).clamp(min=10).long()
+                def row_clip_mask(att_row, n_top):
+                    top_values, arg_top = torch.topk(att_row, k=n_top, dim=-1)
+                    mask = torch.zeros_like(att_row).scatter(-1, arg_top, 1)
+                    return mask
+                mask = torch.stack([row_clip_mask(att_row, n) for att_row, n in zip(torch.permute(att, [2, 0, 1, 3]), n_top)]).permute([1, 2, 0, 3])
+            att = att.masked_fill(mask == 0, float("-inf"))
             return att
 
 
@@ -315,7 +318,7 @@ class CausalSelfAttention(nn.Module):
             row_length = row_length.unsqueeze(0).unsqueeze(1).unsqueeze(-1)
             self.register_buffer("row_length_buffer", row_length, persistent=False)
         if not hasattr(self, "beta"):
-            self.register_buffer("beta", torch.tensor(-5., device=att.device), persistent=True)
+            self.register_buffer("beta", torch.tensor(1., device=att.device), persistent=True)
         if mask is None:
             att = att.masked_fill(self.mask_cache[:,:,:T,:T] == 0, float("-inf"))
         att = self.clip_tail(att, k_ratio=self.beta)
