@@ -1,7 +1,0 @@
-{
-    "name": "stablelm-base-alpha-3b",
-    "hf_config": {
-        "org": "stabilityai",
-        "name": "stablelm-base-alpha-3b"
-    }
-}
