@@ -18,7 +18,7 @@ sys.path.append(str(wd))
 from generate.base import generate
 from lit_gpt.config import Config
 # from lit_gpt.model import GPT
-from lit_gpt.model import GPT
+from lit_gpt.model_conv_nope import GPT
 from lit_gpt import Tokenizer
 #from lit_gpt import GPT, Config, Tokenizer
 from lit_gpt.utils import check_valid_checkpoint_dir, get_default_supported_precision, load_checkpoint
@@ -202,17 +202,16 @@ def run_eval_harness(
 
     model.eval()
     model = fabric.setup_module(model)
-    load_checkpoint(fabric, model, checkpoint_path, strict=True)
-    # try:
-    #     load_checkpoint(fabric, model, checkpoint_path, strict=True)
-    # except Exception:
-    #     print(
-    #         "Failed to load checkpoint with strict=True, trying again with strict=False"
-    #     )
-    #     print("error message details:", file=sys.stderr)
-    #     import traceback
-    #     traceback.print_exc()
-    #     load_checkpoint(fabric, model, checkpoint_path, strict=False)
+    try:
+        load_checkpoint(fabric, model, checkpoint_path, strict=True)
+    except Exception:
+        print(
+            "Failed to load checkpoint with strict=True, trying again with strict=False"
+        )
+        print("error message details:", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        load_checkpoint(fabric, model, checkpoint_path, strict=False)
 
     eval_harness = EvalHarnessBase(fabric, model, tokenizer, 1)
 

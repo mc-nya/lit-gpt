@@ -15,7 +15,7 @@ metrics = [
 ]
 
 # directory where JSON files are stored
-dir_path = 'out/param_eval/'
+dir_path = 'out/eval/'
 
 # a dictionary to collect results
 result_data = {}

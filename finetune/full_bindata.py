@@ -22,7 +22,7 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from generate.base import generate
-from lit_gpt.model import GPT, Block, Config
+from lit_gpt.model_conv_pe import GPT, Block, Config
 from lit_gpt.tokenizer import Tokenizer
 from lit_gpt.utils import (
     check_valid_checkpoint_dir,
@@ -42,7 +42,7 @@ save_interval = 100
 eval_iters = 100
 eval_max_new_tokens = 100
 log_interval = 1
-FSDP=True
+FSDP=False
 COSINE_LR = False
 WANDB = True
 
@@ -166,7 +166,7 @@ def main(fabric: L.Fabric, data_dir: Path, checkpoint_dir: Path, out_dir: Path,
         fabric.print(f"Resuming training from {resume}")
         fabric.load(resume, state)
     else:
-        load_checkpoint(fabric, state["model"], checkpoint_path)
+        load_checkpoint(fabric, state["model"], checkpoint_path, strict=False)
 
     fabric.seed_everything(1337 + fabric.global_rank)
 
