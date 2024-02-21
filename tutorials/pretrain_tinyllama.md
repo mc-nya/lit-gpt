@@ -49,7 +49,7 @@ In order to start pretraining lit-gpt on it, you need to read, tokenize, and wri
 First, install additional dependencies for preprocessing:
 
 ```bash
-pip install lightning[data] torchmetrics tensorboard sentencepiece zstandard pandas pyarrow huggingface_hub
+pip install 'lightning[data]' torchmetrics tensorboard sentencepiece zstandard pandas pyarrow 'huggingface_hub[hf_transfer] @ git+https://github.com/huggingface/huggingface_hub'
 ```
 
 You will need to have the tokenizer config available:
@@ -70,7 +70,7 @@ You will require **1.1 TB** of disk space for Starcoder and **2.5** TB of space 
 python scripts/prepare_starcoder.py \
   --input_dir data/starcoderdata-raw \
   --output_dir data/starcoder \
-  --tokenizer_path checkpoints/Llama-2-7b-hf
+  --tokenizer_path checkpoints/meta-llama/Llama-2-7b-hf
 ```
 
 **SlimPajama:**
@@ -79,29 +79,23 @@ python scripts/prepare_starcoder.py \
 python scripts/prepare_slimpajama.py \
   --input_dir data/slimpajama-raw/validation \
   --output_dir data/slimpajama/val \
-  --tokenizer_path checkpoints/Llama-2-7b-hf
+  --tokenizer_path checkpoints/meta-llama/Llama-2-7b-hf
 
 python scripts/prepare_slimpajama.py \
   --input_dir data/slimpajama-raw/test \
   --output_dir data/slimpajama/test \
-  --tokenizer_path checkpoints/Llama-2-7b-hf
+  --tokenizer_path checkpoints/meta-llama/Llama-2-7b-hf
 
 python scripts/prepare_slimpajama.py \
   --input_dir data/slimpajama-raw/train \
   --output_dir data/slimpajama/train \
-  --tokenizer_path checkpoints/Llama-2-7b-hf
+  --tokenizer_path checkpoints/meta-llama/Llama-2-7b-hf
 ```
 
 If you want to run on a small slice of the datasets first, pass the flag `--fast_dev_run=true` to the commands above.
 In the above we are assuming that you will be using the same tokenizer as used in LlaMA/TinyLlama, but any trained [SentencePiece](https://github.com/google/sentencepiece) tokenizer with a 32000 vocabulary size will do here.
 
 ## Pretraining
-
-Currently, the pretraining with `torch.compile` requires PyTorch 2.2 "nightly". We recommend CUDA 12.1:
-
-```bash
-pip install -U --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121
-```
 
 Running the pretraining script with its default settings requires at least 8 A100 GPUs.
 
