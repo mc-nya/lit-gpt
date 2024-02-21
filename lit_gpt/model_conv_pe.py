@@ -192,7 +192,7 @@ class CausalSelfAttention(nn.Module):
 
         self.config = config
         # self.conv = nn.Conv2d(1, 1, (1, 11) , padding=(0, 5), bias=False)
-        self.conv = nn.Conv2d(config.n_head, config.n_head, (1, 11) , padding=(0, 5), bias=False)
+        self.conv = nn.Conv2d(config.n_head, config.n_head, (1, 21) , padding=(0, 10), bias=False)
         self.conv.weight.data.fill_(1e-6)
 
 

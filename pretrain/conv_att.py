@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from lightning.fabric.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
-from lightning.fabric.strategies import DDPStrategy
+from lightning.fabric.strategies import DDPStrategy, FSDPStrategy
 from lightning.fabric.utilities import ThroughputMonitor, measure_flops
 from torch.utils.data import DataLoader, IterableDataset
 
@@ -20,67 +20,132 @@ wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
 from lit_gpt import Config
-from lit_gpt.model_standard import GPT, Block
+from lit_gpt.packed_dataset import CombinedDataset, PackedDataset
 from lit_gpt.utils import chunked_cross_entropy, estimate_flops, get_default_supported_precision, num_parameters
 
-model_name = "tfpp_standard"
-name = "tfpp_standard"
-config_file = "configs/tfpp_130M_32k.json"
-out_dir = Path(f"/scratch/oymak_root/oymak0/milii/owt_mistral/{name}")
-data_dir = Path("/tmpssd/milii/datasets/openwebtext")
+FSDP=True
+WANDB = False
+WANDB_PROJECT = "conv_attn"
+
 save_interval = 1000
 eval_interval = 1000
 eval_iters = 200
 log_interval = 10
 
 # Hyperparameters
-learning_rate = 6e-4
-batch_size = 480
-micro_batch_size = 12
+learning_rate = 3e-4
+batch_size = 240
+micro_batch_size = 4
 gradient_accumulation_steps = 0
-max_iters = 600000   # num_epochs * (epoch_size // micro_batch_size) // devices
-weight_decay = 1e-1
+max_iters = 30000   # num_epochs * (epoch_size // micro_batch_size) // devices
+weight_decay = 0.01
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0
 decay_lr = True
-warmup_iters = 2000
+warmup_iters = 1000
 lr_decay_iters = max_iters
-min_lr = 6e-5
+min_lr = 3e-5
 
 hparams = {k: v for k, v in locals().items() if isinstance(v, (int, float, str)) and not k.startswith("_")}
-# logger = CSVLogger("out", name, flush_logs_every_n_steps=log_interval)
-logger = WandbLogger(name, save_dir="out", project="conv_attn" )
 
 
-def setup(devices: int = 1, precision: Optional[str] = None, resume: Union[bool, Path] = False) -> None:
+def setup(data_dir: Path = Path(""),
+    out_dir: Path = Path(""),
+    name: str = "",
+    config_file: Path = Path(""),
+    devices: int = 1, 
+    precision: Optional[str] = None, 
+    resume: Union[bool, Path] = False,
+    wandb: bool = WANDB,
+    fsdp: bool = FSDP,
+    model_type: str = "standard",
+    ) -> None:
     precision = precision or get_default_supported_precision(training=True)
+    
+    is_pe = not "nope" in model_type
+    is_conv = "conv" in model_type
+    print("is_pe", is_pe, "is_conv", is_conv)
+    if is_pe and is_conv:
+        print("Using model defined in model_conv_pe.py")
+        from lit_gpt.model_conv_pe import GPT, Block
+    elif is_pe and not is_conv:
+        print("Using model defined in model.py")
+        from lit_gpt.model import GPT, Block
+    elif not is_pe and is_conv:
+        print("Using model defined in model_conv_nope.py")
+        from lit_gpt.model_conv_nope import GPT, Block
+    elif not is_pe and not is_conv:
+        print("Using model defined in model_nope.py")
+        from lit_gpt.model_nope import GPT, Block
 
     if devices > 1:
-        parallel_devices = [torch.device(f"cuda:{i}") for i in range(devices)]
-        strategy = DDPStrategy( parallel_devices=parallel_devices, precision=precision)
+        if fsdp:
+            # For large models, FSDP is recommended to avoid OOMs
+            print("Using FSDP")
+            strategy = FSDPStrategy(
+                auto_wrap_policy={Block},
+                activation_checkpointing_policy={Block},
+                state_dict_type="full",
+                limit_all_gathers=True,
+                cpu_offload=False,
+                # use_orig_params=True,
+            )
+        # For samll model in debug, we can use DDP
+        else:
+            print("Using DDP")
+            parallel_devices = [torch.device(f"cuda:{i}") for i in range(devices)]
+            strategy = DDPStrategy( parallel_devices=parallel_devices, precision=precision)
     else:
         strategy = "auto"
 
+    # log to local out directory
+    if not wandb:
+        logger = CSVLogger("out", name, flush_logs_every_n_steps=log_interval)
+    else:
+        logger = WandbLogger(name, save_dir="out", project=WANDB_PROJECT )
+
     fabric = L.Fabric(devices=devices, strategy=strategy, precision=precision, loggers=logger)
 
+    
+
     if hparams["gradient_accumulation_steps"] ==0:
-        assert batch_size % micro_batch_size == 0
-        gradient_accumulation_steps = batch_size // micro_batch_size
-        assert gradient_accumulation_steps % devices == 0
-        gradient_accumulation_steps = gradient_accumulation_steps // devices
+        assert batch_size % (micro_batch_size*devices) == 0
+        gradient_accumulation_steps = batch_size // (micro_batch_size * devices)
         assert gradient_accumulation_steps > 0
         hparams["gradient_accumulation_steps"] = gradient_accumulation_steps
     hparams["devices"] = devices
+    hparams["name"] = name
+
     fabric.print(hparams)
-    fabric.launch(main, resume=resume)
+    fabric.launch(main,
+                  data_dir,
+                  out_dir,
+                  config_file=config_file,
+                  name=name,
+                  resume=resume,
+                  hparams=hparams,
+                  model_type=model_type)
 
 
-def main(fabric: L.Fabric, resume: Union[bool, Path]) -> None:
+def main(fabric: L.Fabric, data_dir: Path, out_dir: Path,
+         config_file: str, name: str, resume: Union[bool, Path],
+         hparams: dict, model_type: str) -> None:
     if fabric.global_rank == 0:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    fabric.seed_everything(1337, workers=True)  # same seed for every process to init model (FSDP)
+    is_pe = not "nope" in model_type
+    is_conv = "conv" in model_type
+    if is_pe and is_conv:
+        from lit_gpt.model_conv_pe import GPT, Block
+    elif is_pe and not is_conv:
+        from lit_gpt.model import GPT, Block
+    elif not is_pe and is_conv:
+        from lit_gpt.model_conv_nope import GPT, Block
+    elif not is_pe and not is_conv:
+        from lit_gpt.model_nope import GPT, Block
+
+    fabric.seed_everything(42, workers=True)  # same seed for every process to init model (FSDP)
 
     config = Config.from_json(config_file)
     fabric.print(f"Loading model with {config.__dict__}")
@@ -98,10 +163,16 @@ def main(fabric: L.Fabric, resume: Union[bool, Path]) -> None:
     )
     optimizer = fabric.setup_optimizers(optimizer)
 
-    train_data, val_data = load_datasets(data_dir, max_seq_length=model.max_seq_length)
-    train_dataloader = DataLoader(train_data, batch_size=micro_batch_size, num_workers=2)
-    val_dataloader = DataLoader(val_data, batch_size=micro_batch_size, num_workers=2)
-    train_dataloader, val_dataloader = fabric.setup_dataloaders(train_dataloader, val_dataloader)
+    train_dataloader, val_dataloader = create_dataloaders(
+        batch_size=micro_batch_size,
+        block_size=config.block_size,
+        data_dir=data_dir,
+    )
+    if val_dataloader is None:
+        train_dataloader = fabric.setup_dataloaders(train_dataloader)
+    else:
+        train_dataloader, val_dataloader = fabric.setup_dataloaders(train_dataloader, val_dataloader)
+
 
     state = {"model": model, "optimizer": optimizer, "hparams": hparams, "iter_num": 0, "step_count": 0}
 
@@ -112,13 +183,27 @@ def main(fabric: L.Fabric, resume: Union[bool, Path]) -> None:
         fabric.load(resume, state)
 
     train_time = time.perf_counter()
-    train(fabric, state, train_dataloader, val_dataloader)
+    train(fabric, state, train_dataloader, val_dataloader,model_type, out_dir)
     fabric.print(f"Training time: {(time.perf_counter()-train_time):.2f}s")
     if fabric.device.type == "cuda":
         fabric.print(f"Memory used: {torch.cuda.max_memory_allocated() / 1e9:.02f} GB")
 
 
-def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_dataloader: DataLoader) -> None:
+def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_dataloader: DataLoader,
+            model_type: str, out_dir: Path
+          ) -> None:
+
+    is_pe = not "nope" in model_type
+    is_conv = "conv" in model_type
+    if is_pe and is_conv:
+        from lit_gpt.model_conv_pe import GPT, Block
+    elif is_pe and not is_conv:
+        from lit_gpt.model import GPT, Block
+    elif not is_pe and is_conv:
+        from lit_gpt.model_conv_nope import GPT, Block
+    elif not is_pe and not is_conv:
+        from lit_gpt.model_nope import GPT, Block
+
     model = state["model"]
     optimizer = state["optimizer"]
 
@@ -160,6 +245,7 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
                                        "eval/time": t1 * 1000,
                                        "eval/train_loss": train_loss.item(),
                                        "eval/lr": lr,
+                                       "eval/perplexity": math.exp(val_loss.item()),
                                        "step": iter_num,
                                        "eval/valtime": t1 * 1000}, step=iter_num//log_interval)
             fabric.print(f"step {iter_num}: val loss {val_loss.item():.4f}, val time: {t1 * 1000:.2f}ms")
@@ -176,7 +262,9 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
         for micro_step in range(gradient_accumulation_steps):
             is_accumulating = micro_step == gradient_accumulation_steps - 1
             with fabric.no_backward_sync(model, enabled=is_accumulating):
-                input_ids, targets = next(train_iter)
+                train_data = next(train_iter)
+                input_ids = train_data[:, 0 : model.max_seq_length].contiguous()
+                targets = train_data[:, 1 : model.max_seq_length + 1].contiguous().type(torch.LongTensor).to(fabric.device)
                 logits = model(input_ids)
                 loss = chunked_cross_entropy(logits, targets, chunk_size=0)
                 fabric.backward(loss / gradient_accumulation_steps)
@@ -203,6 +291,7 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
                                        "running/lr": lr,
                                         "running/remaining_time": est_time / 60. / 60.,
                                        "running/itertime": (t1 - iter_t0) * 1000,
+                                       "running/perplexity": math.exp(loss_item),
                                        "step": iter_num}, step=iter_num//log_interval)
             fabric.print(
                 f"iter {iter_num}: loss {loss_item:.4f}, iter time:"
@@ -215,11 +304,13 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
 def validate(fabric: L.Fabric, model: torch.nn.Module, val_dataloader: DataLoader, max_iters: int) -> torch.Tensor:
     fabric.print("Validating ...")
     model.eval()
-    val_iter = iter(val_dataloader)
 
     losses = torch.zeros(max_iters, device=fabric.device)
-    for k in range(max_iters):
-        input_ids, targets = next(val_iter)
+    for k, val_data in enumerate(val_dataloader):
+        if k >= max_iters:
+            break
+        input_ids = val_data[:, 0 : model.max_seq_length].contiguous()
+        targets = val_data[:, 1 : model.max_seq_length + 1].contiguous().type(torch.LongTensor).to(fabric.device)
         logits = model(input_ids)
         losses[k] = chunked_cross_entropy(logits, targets, chunk_size=0)
     out = losses.mean()
@@ -228,26 +319,38 @@ def validate(fabric: L.Fabric, model: torch.nn.Module, val_dataloader: DataLoade
     return out
 
 
-def load_datasets(data_dir: Path, max_seq_length: int) -> Tuple["Dataset", "Dataset"]:
-    train_data = Dataset(data_dir / "train.bin", max_seq_length)
-    val_data = Dataset(data_dir / "val.bin", max_seq_length)
-    return train_data, val_data
+def create_dataloaders(batch_size: int, 
+                       block_size: int, 
+                       num_workers: int = 8, 
+                       data_dir: Path = Path("")
+) -> Tuple[DataLoader, DataLoader]:
+    
+    from lightning.data import  StreamingDataset
+    from lightning.data.streaming.item_loader import TokensLoader
 
+    # Increase by one because we need the next word as well
+    effective_block_size = block_size + 1
+    train_dataset = StreamingDataset(
+            input_dir=(data_dir.joinpath("train")).__str__(),
+            item_loader=TokensLoader(block_size=effective_block_size),
+            shuffle=True,
+            drop_last=True,
+        )
+    train_dataloader = DataLoader(
+        train_dataset, batch_size=batch_size, pin_memory=True, num_workers=num_workers, drop_last=True
+    )
 
-class Dataset(IterableDataset):
-    def __init__(self, data_file: Path, max_seq_length: int):
-        super().__init__()
-        self.data_file = data_file
-        self.max_seq_length = max_seq_length
-
-    def __iter__(self):
-        data = np.memmap(self.data_file, dtype=np.uint16, mode="r")
-        while True:
-            i = torch.randint(len(data) - self.max_seq_length, (1,)).item()
-            x = torch.from_numpy((data[i : i + self.max_seq_length]).astype(np.int64))
-            y = torch.from_numpy((data[i + 1 : i + 1 + self.max_seq_length]).astype(np.int64))
-            yield x, y
-
+    val_dataset = StreamingDataset(
+        input_dir=data_dir.joinpath("validation").__str__(),
+        item_loader=TokensLoader(block_size=effective_block_size),
+        shuffle=True,
+        # Consider setting to False, but we would lose some samples due to truncation when world size > 1
+        drop_last=True,
+    )
+    val_dataloader = DataLoader(
+        val_dataset, batch_size=batch_size, pin_memory=True, num_workers=num_workers, drop_last=True
+    )
+    return train_dataloader, val_dataloader
 
 # learning rate decay scheduler (cosine with linear warmup)
 def get_lr(it: int, warmup_iters: int, max_iters: int) -> float:
