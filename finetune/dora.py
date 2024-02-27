@@ -257,7 +257,8 @@ def train(
             fabric.barrier()
         if iter_num % save_interval == 0:
             checkpoint_path = out_dir / f"iter-{iter_num:06d}-ckpt.pth"
-            save_checkpoint(fabric, state, checkpoint_path)    
+            save_lora_checkpoint(fabric, {"model": state["model"]}, checkpoint_path)
+            # save_checkpoint(fabric, state, checkpoint_path)    
         iter_t0 = time.perf_counter()
         iter_length = 0
         gradient_accumulation_steps = hparams["gradient_accumulation_steps"]

@@ -1,0 +1,12 @@
+{
+    "lora_r": 8,
+    "lora_alpha" : 16,
+    "lora_dropout" : 0.05,
+    "lora_query" : true,
+    "lora_key" : false,
+    "lora_value" : true,
+    "lora_projection" : false,
+    "lora_mlp" : false,
+    "lora_head" : false,
+    "warmup_steps" : 100
+}
