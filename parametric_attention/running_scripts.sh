@@ -90,3 +90,27 @@ python finetune/full_bindata_sparse.py \
 --name "lambada-160-pythia" \
 --config_file "configs/pythia-160m_4096.json" \
 --devices 4
+
+python finetune/full_gpt2_FT_PTS.py \
+--checkpoint_dir pretrain_gpt2 \
+--data_dir /scratch/oymak_root/oymak0/milii/datasets/openwebtext \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/owt/gpt2_FT_PTS" \
+--name "gpt2-FT_PTS" \
+--config_file "configs/gpt_2_124M_original.json" \
+--devices 4
+
+python finetune/full_gpt2_PTS.py \
+--checkpoint_dir pretrain_gpt2 \
+--data_dir /scratch/oymak_root/oymak0/milii/datasets/openwebtext \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/owt/gpt2_PTS" \
+--name "gpt2-PTS" \
+--config_file "configs/gpt_2_124M_original.json" \
+--devices 4
+
+python finetune/full_gpt2_FT.py \
+--checkpoint_dir pretrain_gpt2 \
+--data_dir /scratch/oymak_root/oymak0/milii/datasets/openwebtext \
+--out_dir "/scratch/oymak_root/oymak0/milii/paramattn/owt/gpt2_PTS" \
+--name "gpt2-PTS" \
+--config_file "configs/gpt_2_124M_original.json" \
+--devices 4
