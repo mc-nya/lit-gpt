@@ -131,11 +131,11 @@ def test_model(fabric, model, tokenizer, prompt_text,pass_key) -> torch.Tensor:
         # do not set `max_seq_length=max_returned_token` because memory is not a concern here
         model.set_kv_cache(batch_size=1)
     output = generate(
-        model, encoded, max_returned_tokens=len(prompt_text), temperature=0.8, eos_id=tokenizer.eos_id
+        model, encoded, max_returned_tokens=len(encoded)+10, temperature=0.8, eos_id=tokenizer.eos_id
     )
     model.clear_kv_cache()
     output = tokenizer.decode(output)
-    fabric.print(output)
+    # fabric.print(output)
     response = output
     assert f"The pass key is {pass_key}" in prompt_text
 
