@@ -254,16 +254,17 @@ class CausalSelfAttention(nn.Module):
         # )
         # use naive implementation becase we need some statistics from the attention
         att = (q @ k.transpose(-2, -1)) * scale
-        B, nh, T, _ = att.size()
+        # B, nh, T, _ = att.size()
+        L, S = q.size(-2), k.size(-2)
         if not hasattr(self, "mask_cache"):
             self.register_buffer("mask_cache", 
                                  build_mask_cache(self.config.block_size, device = att.device), persistent=False)
         if mask is None:
-            att = att.masked_fill(self.mask_cache[:,:,:T,:T] == 0, float("-inf"))
+            att = att.masked_fill(self.mask_cache[:,:,:L,:S] == 0, float("-inf"))
         att = torch.nn.functional.softmax(att, dim=-1, dtype=att.dtype)
         # att = self.conv(att.view(-1, 1, T, T)).view(B, nh, T, T)
         att = self.conv(att)
-        att = att.masked_fill_(self.mask_cache[:,:,:T, :T] == 0, float('0.0'))
+        att = att.masked_fill_(self.mask_cache[:,:,:L, :S] == 0, float('0.0'))
         y = att @ v
         return y.transpose(1, 2)
 

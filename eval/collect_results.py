@@ -6,12 +6,16 @@ import pandas as pd
 metrics = [
     'wikitext:word_perplexity',
     'lambada_standard:ppl',
+    'lambada_openai:ppl',
     'lambada_standard:acc',
+    'lambada_openai:acc',
     'piqa:acc',
     'hellaswag:acc_norm',
     'winogrande:acc',
     'arc_easy:acc',
     'arc_challenge:acc_norm',
+    # 'truthfulqa_mc:mc1',
+    # 'truthfulqa_mc:mc2',
 ]
 
 # directory where JSON files are stored
@@ -39,11 +43,12 @@ for root, dirs, files in os.walk(dir_path):
 
                 result_data[file] = this_file_data
 
+
 # for all metric that contains 'acc', take the avg and add it to last column
-# for key, value in result_data.items():
-#     result_data[key]['avg_acc'] = sum([
-#         value[x] for x in value.keys() if 'acc' in x
-#     ]) / len([value[x] for x in value.keys() if 'acc' in x])
+for key, value in result_data.items():
+    result_data[key]['avg_acc'] = sum([
+        value[x] for x in value.keys() if 'acc' in x
+    ]) / len([value[x] for x in value.keys() if 'acc' in x])
 # convert the dictionary to a pandas DataFrame and write it to a CSV file
 result_df = pd.DataFrame(result_data.values(), index=result_data.keys())
 # round to 3

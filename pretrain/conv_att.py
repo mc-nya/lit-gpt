@@ -37,7 +37,7 @@ learning_rate = 3e-4
 batch_size = 240
 micro_batch_size = 4
 gradient_accumulation_steps = 0
-max_iters = 30000   # num_epochs * (epoch_size // micro_batch_size) // devices
+max_iters = 30001   # num_epochs * (epoch_size // micro_batch_size) // devices
 weight_decay = 0.01
 beta1 = 0.9
 beta2 = 0.95
@@ -66,7 +66,41 @@ def setup(data_dir: Path = Path(""),
     is_pe = not "nope" in model_type
     is_conv = "conv" in model_type
     print("is_pe", is_pe, "is_conv", is_conv)
-    if is_pe and is_conv:
+    if "convdw_pe" in model_type:
+        print("Using model defined in model_convdw_pe.py")
+        from lit_gpt.model_convdw_pe import GPT, Block
+    elif "convkq_pe" in model_type:
+        print("Using model defined in model_convkq_pe.py")
+        from lit_gpt.model_convkq_pe import GPT, Block
+    elif "convbase_pe" in model_type:
+        print("Using model defined in model_convbase_pe.py")
+        from lit_gpt.model_convbase_pe import GPT, Block
+    elif "convcausalv_pe" in model_type:
+        print("Using model defined in model_convcausalv_pe.py")
+        from lit_gpt.model_convcausalv_pe import GPT, Block
+    elif "convcausalvfeature_pe" in model_type:
+        print("Using model defined in model_convcausalvfeature_pe.py")
+        from lit_gpt.model_convcausalvfeature_pe import GPT, Block
+    elif "convcausalatt_pe" in model_type:
+        print("Using model defined in model_convcausalatt_pe.py")
+        from lit_gpt.model_convcausalatt_pe import GPT, Block
+    elif "conv1DQK_pe" in model_type:
+        print("Using model defined in model_conv1DQK_pe.py")
+        from lit_gpt.model_conv1DQK_pe import GPT, Block
+    elif "conv1DQV_pe" in model_type:
+        print("Using model defined in model_conv1DQV_pe.py")
+        from lit_gpt.model_conv1DQV_pe import GPT, Block
+    elif "conv1DQK_nope" in model_type:
+        print("Using model defined in model_conv1DQK_nope.py")
+        from lit_gpt.model_conv1DQK_nope import GPT, Block
+    elif "conv1DQKV_pe" in model_type:
+        print("Using model defined in model_conv1DQKV_pe.py")
+        from lit_gpt.model_conv1DQKV_pe import GPT, Block
+    elif "conv1DQKV_nope" in model_type:
+        print("Using model defined in model_conv1DQKV_nope.py")
+        from lit_gpt.model_conv1DQKV_nope import GPT, Block
+
+    elif is_pe and is_conv:
         print("Using model defined in model_conv_pe.py")
         from lit_gpt.model_conv_pe import GPT, Block
     elif is_pe and not is_conv:
@@ -78,6 +112,8 @@ def setup(data_dir: Path = Path(""),
     elif not is_pe and not is_conv:
         print("Using model defined in model_nope.py")
         from lit_gpt.model_nope import GPT, Block
+    else:
+        raise NotImplementedError("Model type not supported")
 
     if devices > 1:
         if fsdp:
@@ -136,7 +172,40 @@ def main(fabric: L.Fabric, data_dir: Path, out_dir: Path,
 
     is_pe = not "nope" in model_type
     is_conv = "conv" in model_type
-    if is_pe and is_conv:
+    if "convdw_pe" in model_type:
+        print("Using model defined in model_convdw_pe.py")
+        from lit_gpt.model_convdw_pe import GPT, Block
+    elif "convkq_pe" in model_type:
+        print("Using model defined in model_convkq_pe.py")
+        from lit_gpt.model_convkq_pe import GPT, Block
+    elif "convbase_pe" in model_type:
+        print("Using model defined in model_convbase_pe.py")
+        from lit_gpt.model_convbase_pe import GPT, Block
+    elif "convcausalv_pe" in model_type:
+        print("Using model defined in model_convcausalv_pe.py")
+        from lit_gpt.model_convcausalv_pe import GPT, Block
+    elif "conv1DQV_pe" in model_type:
+        print("Using model defined in model_conv1DQV_pe.py")
+        from lit_gpt.model_conv1DQV_pe import GPT, Block
+    elif "convcausalvfeature_pe" in model_type:
+        print("Using model defined in model_convcausalvfeature_pe.py")
+        from lit_gpt.model_convcausalvfeature_pe import GPT, Block
+    elif "convcausalatt_pe" in model_type:
+        print("Using model defined in model_convcausalatt_pe.py")
+        from lit_gpt.model_convcausalatt_pe import GPT, Block
+    elif "conv1DQK_pe" in model_type:
+        print("Using model defined in model_conv1DQK_pe.py")
+        from lit_gpt.model_conv1DQK_pe import GPT, Block
+    elif "conv1DQK_nope" in model_type:
+        print("Using model defined in model_conv1DQK_nope.py")
+        from lit_gpt.model_conv1DQK_nope import GPT, Block
+    elif "conv1DQKV_pe" in model_type:
+        print("Using model defined in model_conv1DQKV_pe.py")
+        from lit_gpt.model_conv1DQKV_pe import GPT, Block
+    elif "conv1DQKV_nope" in model_type:
+        print("Using model defined in model_conv1DQKV_nope.py")
+        from lit_gpt.model_conv1DQKV_nope import GPT, Block
+    elif is_pe and is_conv:
         from lit_gpt.model_conv_pe import GPT, Block
     elif is_pe and not is_conv:
         from lit_gpt.model import GPT, Block
@@ -195,7 +264,41 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
 
     is_pe = not "nope" in model_type
     is_conv = "conv" in model_type
-    if is_pe and is_conv:
+    if "convdw_pe" in model_type:
+        print("Using model defined in model_convdw_pe.py")
+        from lit_gpt.model_convdw_pe import GPT, Block
+    elif "convkq_pe" in model_type:
+        print("Using model defined in model_convkq_pe.py")
+        from lit_gpt.model_convkq_pe import GPT, Block
+    elif "convbase_pe" in model_type:
+        print("Using model defined in model_convbase_pe.py")
+        from lit_gpt.model_convbase_pe import GPT, Block
+    elif "convcausalv_pe" in model_type:
+        print("Using model defined in model_convcausalv_pe.py")
+        from lit_gpt.model_convcausalv_pe import GPT, Block
+    elif "convcausalvfeature_pe" in model_type:
+        print("Using model defined in model_convcausalvfeature_pe.py")
+        from lit_gpt.model_convcausalvfeature_pe import GPT, Block
+    elif "convcausalatt_pe" in model_type:
+        print("Using model defined in model_convcausalatt_pe.py")
+        from lit_gpt.model_convcausalatt_pe import GPT, Block
+
+    elif "conv1DQV_pe" in model_type:
+        print("Using model defined in model_conv1DQV_pe.py")
+        from lit_gpt.model_conv1DQV_pe import GPT, Block
+    elif "conv1DQK_pe" in model_type:
+        print("Using model defined in model_conv1DQK_pe.py")
+        from lit_gpt.model_conv1DQK_pe import GPT, Block
+    elif "conv1DQK_nope" in model_type:
+        print("Using model defined in model_conv1DQK_nope.py")
+        from lit_gpt.model_conv1DQK_nope import GPT, Block
+    elif "conv1DQKV_pe" in model_type:
+        print("Using model defined in model_conv1DQKV_pe.py")
+        from lit_gpt.model_conv1DQKV_pe import GPT, Block
+    elif "conv1DQKV_nope" in model_type:
+        print("Using model defined in model_conv1DQKV_nope.py")
+        from lit_gpt.model_conv1DQKV_nope import GPT, Block
+    elif is_pe and is_conv:
         from lit_gpt.model_conv_pe import GPT, Block
     elif is_pe and not is_conv:
         from lit_gpt.model import GPT, Block
@@ -227,6 +330,10 @@ def train(fabric: L.Fabric, state: dict, train_dataloader: DataLoader, val_datal
     total_t0 = time.perf_counter()
 
     train_iter = iter(train_dataloader)
+    # forward train_iter if resumed where state["iter_num"] > 0
+    for _ in range(state["iter_num"]):
+        for _ in range(hparams["gradient_accumulation_steps"]):
+            next(train_iter)
 
     for state["iter_num"] in range(state["iter_num"], max_iters):
         iter_num = state["iter_num"]
